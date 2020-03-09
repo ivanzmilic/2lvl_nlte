@@ -11,6 +11,11 @@ font = {'family' : 'normal',
 import matplotlib
 matplotlib.rc('font', **font)  
 
+# -----------------------------------------------------------------------------------
+# A simple demo for 2-level atom NLTE spectral line formation
+# Written by Ivan Milic (CU/LASP/NSO) with help and contribution from C. Osborne (U Glasgow)
+# The code starts around line ~ 150
+
 #-------------------------------------------
 # Short characteristics formal solver:
 @jit('float64[:,:](float64[:],float64[:],float64,float64)',nopython=True)
@@ -133,8 +138,6 @@ def calc_anisotropy(tau,mu,wmu,profile,wx,S):
 #def calc_anisotropy_response(tau,mu,wmu,profile,wx,dS_dB):
 
 
-
-
 @jit('float64[:](float64[:],float64[:],float64,float64[:],float64)',nopython=True)
 def one_full_fs(tau,S,mu,profile,boundary):
 
@@ -149,22 +152,29 @@ def one_full_fs(tau,S,mu,profile,boundary):
 #-------------------------------------------
 
 # We will define a discrete grid for our spacial coordinate, that is logtau 
-
+# This is continuum
 ND = 91
 logtau = np.linspace(-7,2,ND)
 tau = 10.0**logtau
 
+# Planck Function, so the atmosphere is isothermal:
 B = np.zeros(ND)
 B[:] = 1.0
 
+# Photon destruction probability, smaller this is, more NLTE we are.
 eps = np.zeros(ND)
 eps[:] = 1E-4
 
+# The ratio between line and continuum opacity
 line_ratio = 1E3
 
+# Wavelength grid, in Doppler width units.
+# Profile is constant with depth, for simplicity
 NL = 21
 x = np.linspace(-4,4,NL)
 profile = 1./np.sqrt(np.pi) * np.exp(-(x**2.0))
+
+# Wavelength integration weights
 prof_norm = np.sum(profile)
 wx = np.zeros(NL)
 wx[0] = (x[1] - x[0]) * 0.5
@@ -173,27 +183,29 @@ wx[1:-1] = (x[2:NL] - x[0:-2]) * 0.5
 norm =  (np.sum(profile*wx))
 wx/= norm
 
-S = np.copy(B)
-
+# Angle integration:
 mu=([1./np.sqrt(3.0)])
 wmu=[1.0]
-
 mu=np.cos([0.4793425352,1.0471975512,1.4578547042])
 wmu=[.2777777778,0.4444444444,0.2777777778]
 NM = mu.shape[0]
-
 mu = np.asarray(mu)
 wmu = np.asarray(wmu)
 
+#Boundary conditions and starting value for the source function
 I_boundary_lower = B[-1];
 I_boundary_upper = 0.0;
+S = np.copy(B)
 
-
+# Iteration part
 for iter in range(0,200):
 	
+	# Initialize the scattering integral and local lambda operator
 	J = np.zeros(ND)
 	L = np.zeros(ND)
 
+	# For each direction and wavelength, calculate the specific monochromatic intensity
+	# and add contributions to the mean intensity and the local operator
 	for m in range(0,NM):
 		for l in range(0,NL):
 
@@ -208,31 +220,36 @@ for iter in range(0,200):
 
 			J+=ILambda[0]*profile[l]*wx[l]*wmu[m]*0.5
 			L+=ILambda[1]*profile[l]*wx[l]*wmu[m]*0.5
-			
+	
+	# Correct the source function using local ALI approach:		
 	dS = (eps * B + (1.-eps) * J - S) / (1.-(1.-eps)*L)
 
+	# Check for change
 	max_change  = np.max(np.abs(dS / S))
 	print (max_change)
 
+	# Correct the source function
 	S += dS
 	if (max_change<1E-4):
 		break;
 
+# Calculate the full lambda operator 
 LL = calc_lambda_full(tau*line_ratio,mu,wmu,profile,wx)
-
-
 
 # Response function of the source function to the temperature:
 dS_dB = np.linalg.inv(np.eye(ND)-(1.-eps)*LL)@ (eps*np.eye(ND))
 
 # Then the emergent intensity is:
+# We use more refined profile to get a nicer-looking line
 x_detailed = np.linspace(-6,6,121)
 detailed_profile = 1./np.sqrt(np.pi) * np.exp(-x_detailed**2.0)
 
+# Spectra is result of one formal solution in direction mu = 1
 spectra = one_full_fs(tau*line_ratio,S,1.0,detailed_profile,B[-1])
 
+# Response function of the intensity we will calculate by perturbing the source function
+# at each depth by the response we just calculated and then subtracting the original one
 rf = np.zeros((ND,detailed_profile.shape[0]))
-
 for d in range(0,ND):
 	rf[d] = one_full_fs(tau*line_ratio,S+dS_dB[:,d]*1E-3,1.0,detailed_profile,B[-1])-spectra
 
@@ -272,11 +289,6 @@ plt.xlabel("Reduced wavelength")
 plt.ylabel("Intensity")
 plt.tight_layout()
 plt.savefig("2LVL_NLTE.png",fmt='png',bbox_inches='tight')
-
-# ==========================================================================================
-# Anisotropy
-
-J_02 = calc_anisotropy(tau*line_ratio, mu, wmu, profile, wx, S)
 
 
 
