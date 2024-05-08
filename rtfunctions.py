@@ -13,8 +13,105 @@ matplotlib.rc('font', **font)
 
 # -----------------------------------------------------------------------------------
 # A simple demo for 2-level atom NLTE spectral line formation
-# Written by Ivan Milic (CU/LASP/NSO) with help and contribution from C. Osborne (U Glasgow)
+# Written by Ivan Milic (CU/LASP/NSO, now KIS) and C. Osborne (U Glasgow)
 # The code starts around line ~ 150
+
+#-------------------------------------------
+# Short characteristics formal solver for given s, op, em, boundary - more along the ray
+# formulation than before. The integration should work both ways. 
+#@jit(nopython=True)
+def delo_order_0(s, op, em, I_boundary):
+
+    ND = len(s)
+
+    I = np.zeros(ND) # intensity
+    L = np.zeros(ND) # local operator - perhaps unneeded 
+    
+    I[ND-1] = I_boundary
+    
+    ds = -(s[1:] - s[:-1]) # Should be positive, keep in mind it has ND-1 elements
+
+    dt = ds * 0.5 * (op[1:,0,0] + op[:-1,0,0]) # ND-1 elements
+
+    tau = np.zeros(ND)
+    tau[1:] = np.cumsum(dt)
+
+    sf = em / op[:,0,0]
+
+    kf = op[:,:,:] / op[:,0,0] # Brute force fancy K
+    kf = [:,0,0] = 0.0
+    kf = [:,1,1] = 0.0
+    kf = [:,2,2] = 0.0
+    kf = [:,3,3] = 0.0
+
+    omexpt = np.zeros(ND)
+    omexpt[:-1] = -np.expm1(-dt)
+    expt = 1.0-omexpt
+
+    # Now you have Id = Id+1 * np.exp(-dt) + (1-np.exp(-dt)) * ssf
+
+    # That turns into A I = b where A is a 4x4 matrix, I is intensity and b is rhs similar to the scalar case
+
+    ones = np.diag(np.ones(4))
+
+    A = ones[None,:,:] + kf * omexpt
+    b = 
+
+    # Each S will contribute to the emergent intensity as: Sd * (1-exp t_d) * exp-(tt), where tt the distance to the top
+
+    l_top = omexpt * np.exp(-tau)
+
+    I = np.sum(l_top * sf)
+
+    return I
+
+def sc_order_0(s, op, em, I_boundary):
+
+    # s shape is ND 
+    # op shape is ND, 4,4
+    # em shape is ND, 4
+    # I Boundary is scalar quantity
+
+
+    ND = len(s)
+    
+    I = np.zeros(ND,4) # intensity
+    
+    I[ND-1,0] = I_boundary # Incoming intensity is zero
+    
+    
+    ds = -(s[1:] - s[:-1]) # Should be positive, keep in mind it has ND-1 elements
+
+    dt = ds * 0.5 * (op[1:] + op[:-1]) # ND-1 elements
+
+    print (dt)
+    tau = np.zeros(ND)
+    tau[1:] = np.cumsum(dt)
+
+    print (tau)
+
+    sf = em / op
+
+    print (sf)
+    omexpt = np.zeros(ND)
+    omexpt[:-1] = -np.expm1(-dt)
+    expt = 1.0-omexpt
+
+    print (omexpt)
+    print (expt)
+
+    # Now you have Id = Id+1 * np.exp(-t) + Sd * (1-exp t)
+
+    # Each S will contribute to the emergent intensity as: Sd * (1-exp t_d) * exp-(tt), where tt the distance to the top
+
+    l_top = omexpt * np.exp(-tau)
+
+    print (l_top)
+    print (np.sum(l_top))
+    
+    I = np.sum(l_top * sf) + I_boundary * np.exp(-tau[-1])
+
+    return I
 
 #-------------------------------------------
 # Short characteristics formal solver:
@@ -148,3 +245,11 @@ def one_full_fs(tau,S,mu,profile,boundary):
         I[l] = sc_2nd_order(tau*profile[l],S,mu,boundary)[0,0]
 
     return I
+
+# Mini example:
+
+s = np.linspace(1000,0,101)
+op = np.exp(-s/200)
+em = op
+
+I = sc_order_0(s, op, em, 1.0)
