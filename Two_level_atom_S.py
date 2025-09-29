@@ -12,6 +12,8 @@ def solve_2level_nlte(ND, NM, NL, B, profile_type, lratio = 1E3, slab = False):
     # lratio (default = 1E3 for us) is the line and continuum opacity 
     # slab - true if the user studies slab of finite optical depth, false if user is interested in semi-infinite atmopshere; default is False 
     
+    npdec = 22 # p in Rybicki & Hummer (1991), number of points per decade 
+
     # Optical depth grid
     if (slab == False):
         logtau = np.linspace(-5, 10, ND)
@@ -19,13 +21,39 @@ def solve_2level_nlte(ND, NM, NL, B, profile_type, lratio = 1E3, slab = False):
         up_bound = 0.0
         low_bound = 1.0
     else:
+        dtau1 = 1E-2
+        taumax = 1E4
+        fac = 10.**(1./float(npdec))
+        dtau = dtau1  
+        t = 0.
+        k = 1
+        while (t < taumax):
+            k = k + 1
+            t = t + dtau
+            dtau = fac * dtau
+        npts = k
+        z = np.zeros((npts))
+        z[0] = 0.
+        z[1] = dtau1
+        dtau = dtau1 * fac
+        for k in np.arange(2, npts):
+            z[k] = z[k-1] + dtau
+            dtau = fac * dtau
+        tau = z
+        ND = npts
+        print(tau)
+        '''
         T = float(input("Please enter the value for total optical thickness of slab: "))
         ll = np.log10(T)
-        logtau = np.linspace(-ll, ll, ND)
+        logtau_deep = np.linspace(-ll, 0 , ND)
+        logtau_shallow = np.linspace(0, ll, ND)
+        logtau = np.concatenate((logtau_deep, logtau_shallow))
         tau = 10**logtau
+        '''
         up_bound = 0.0
-        low_bound = 0.0
+        low_bound = 1.0
 
+        
     # Planck's function
     B = np.zeros(ND)
     B[:] = 1 # constant with depth (simplified case)
@@ -44,7 +72,7 @@ def solve_2level_nlte(ND, NM, NL, B, profile_type, lratio = 1E3, slab = False):
 
     if (profile_type == 1):
         # Doppler profile
-        profile = 1/np.sqrt(np.pi) * np.exp(-(x**2))
+        profile = 1/np.sqrt(np.pi) * np.exp(-(x**2)) 
     elif profile_type == 2:
         # Voigt profile
         alpha = float(input("Please enter the value for alpha: "))
@@ -62,7 +90,7 @@ def solve_2level_nlte(ND, NM, NL, B, profile_type, lratio = 1E3, slab = False):
     wx[0] = (x[1] - x[0]) * 0.5
     wx[-1] = (x[-1] - x[-2]) * 0.5
     wx[1:-1] = (x[2:NL] - x[0:-2]) * 0.5
-    norm = (np.sum(profile*wx))
+    norm = (np.sum(profile * wx))
     wx = wx/norm
     
     # Angle integration:
@@ -76,6 +104,14 @@ def solve_2level_nlte(ND, NM, NL, B, profile_type, lratio = 1E3, slab = False):
     #print(wmu)
     #print(profile)
     #print(mu)
+
+    # Relative and true error 
+    SEdd = 1.0 - (1.0 - np.sqrt(epsilon)) * (np.exp(-np.sqrt(3.0 * epsilon) * tau)) # Eddington source function
+
+    true_err = np.zeros((200))
+    rel_err = np.zeros((200))
+
+
     # Initialize one figure for plotting
     fig = plt.figure(constrained_layout = True, figsize = (13, 7))
 
@@ -111,24 +147,55 @@ def solve_2level_nlte(ND, NM, NL, B, profile_type, lratio = 1E3, slab = False):
 
         # Check for change
         max_change = np.max(np.abs(dS/S))
+        rel_err[j] = max_change
+
+        true_error = np.max(np.abs(S - SEdd)/SEdd)
+        true_err[j] = true_error
 
         S += dS
         #print(S)
-        plt.semilogy(logtau, S, '-k', alpha = 0.20)
-        if(max_change < 1E-4):
+        plt.semilogy(np.log10(tau), S, '-k', alpha = 0.20)
+        plt.semilogy(np.log10(tau), SEdd, '--', color = "red", linewidth = 2)
+        if(max_change < 1E-6):
             break
         fin = S    
     plt.xlabel("$\\log\\tau$ in the line")
     plt.ylabel("$\\log$S")
     plt.show()
+    #tau_LL = tau**10
     I_out = one_full_fs(tau * lratio, fin, 1.0, profile, fin[-1])
+    LL = calc_lambda_full(tau * lratio, mu, wmu, profile, wx)
+    print(np.shape(LL))
     #plt.tight_layout()
-    return np.stack([fin, I_out])
+    res = []
+    res.append(fin)
+    res.append(I_out)
+    res.append(LL)
+    res.append(rel_err)
+    res.append(true_err)
+    return res
 
 
 
+# A basic example for testing purposes
+S_g = solve_2level_nlte(91, 3, 21, 1.0, 1, lratio = 1E3, slab = True) # this is the solution which contains
+S = S_g[0] # the source function
+I = S_g[1] # the outgoing intensity
+L = S_g[2] # the Lambda operator
+rel_err = S_g[3] # relative error per iteration
+true_err = S_g[4] # true error per iteration
+# Plotting the Lambda operator 
+plt.figure(constrained_layout = True, figsize = (8, 6))
+plt.imshow(np.log10(L), origin = "lower", cmap = "gray")
+plt.show()
 
 
-# A basic example
-S = solve_2level_nlte(91, 3, 21, 1.0, 1, lratio = 1E3, slab = True)[0]
-I = solve_2level_nlte(91, 3, 21, 1.0, 1, lratio = 1E3, slab = True)[1]
+# Plotting relative and true error (testing the convergence esentially)
+plt.figure(constrained_layout = True, figsize = (8, 6))
+plt.semilogy(rel_err, '--k', linewidth = 2, label = "Relative error")
+plt.semilogy(true_err, color = "orange", linewidth = 2, label = "True error")
+plt.xlabel('Iteration number', fontsize = 18)
+plt.ylabel('Max. relative correction and true error', fontsize = 18)
+plt.legend()
+plt.show()
+
