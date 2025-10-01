@@ -4,12 +4,12 @@ import astropy.io.fits as fits
 from numba import jit
 import sys
 
-font = {'family' : 'normal',                                   
-        'weight' : 'normal',             
-        'size'   : 18} 
+#font = {'family' : 'normal',                                   
+#        'weight' : 'normal',             
+#        'size'   : 18} 
 
 import matplotlib
-matplotlib.rc('font', **font)  
+#matplotlib.rc('font', **font)  
 
 # -----------------------------------------------------------------------------------
 # A simple demo for 2-level atom NLTE spectral line formation
@@ -20,7 +20,7 @@ matplotlib.rc('font', **font)
 # Short characteristics formal solver for given s, op, em, boundary - more along the ray
 # formulation than before. The integration should work both ways. 
 #@jit(nopython=True)
-def delo_order_0(s, op, em, I_boundary):
+'''def delo_order_0(s, op, em, I_boundary):
 
     ND = len(s)
 
@@ -63,7 +63,7 @@ def delo_order_0(s, op, em, I_boundary):
 
     I = np.sum(l_top * sf)
 
-    return I
+    return I'''
 
 def sc_order_0(s, op, em, I_boundary):
 
@@ -72,7 +72,7 @@ def sc_order_0(s, op, em, I_boundary):
     # em shape is ND, 4
     # I Boundary is scalar quantity
 
-
+    '''
     ND = len(s)
     
     I = np.zeros(ND,4) # intensity
@@ -111,7 +111,7 @@ def sc_order_0(s, op, em, I_boundary):
     
     I = np.sum(l_top * sf) + I_boundary * np.exp(-tau[-1])
 
-    return I
+    return I'''
 
 #-------------------------------------------
 # Short characteristics formal solver:
