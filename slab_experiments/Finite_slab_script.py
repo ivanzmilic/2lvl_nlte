@@ -14,10 +14,10 @@ from scipy.integrate import quad as q
 # Define "constants"
 R_sun = 696000 # km
 H = 80000 # km above the Sun's surface
-tht_crit = R_sun/(R_sun + H)
+tht_crit = R_sun/(R_sun + H) # IM: Check if this sine of theta or actual theta
 mu_crit = np.cos(tht_crit)
 
-def J_photosphere(tau, quad):
+def J_photosphere(tau, quad): #IM: is this the so-called J_const as we called it in written notes? 
     ND = len(tau)
     tau_LOS = np.zeros([len(quad[3]), len(quad[1])])
     for m in range(0, len(quad[3])):
@@ -41,6 +41,18 @@ def J_photosphere(tau, quad):
     #I_ph = one_full_fs(tau_los, S, quad[3], quad[0], 0.0)
     #J_const, err = q(I_ph, mu_crit, 1)
     return tau_LOS
+
+    # IM: So after calculating tau(lambda, mu) at each point in the grid (so, in principle, we tau_los should be 3-D , ND, NM, NL)
+    # We can calculate I_const as I_0 (mu) * np.exp(-tau_los)
+    # And add to J
+    # But how to use the quadrature?
+    # Try to design the quadrature so that it is defined only for interval from mu_crit to 1
+    # What is the sanity check: 
+    # a) For the lowermost point in the slab (i.e. no absorption), J should be equal to the integral of I_0(mu) from mu_crit to 1, 
+    # a1) AND J should be decreasing with H 
+    # b) J should be decreasing with tau inside the slab. 
+    # b1) Try to make slab which is very optically thin, but still has a lot of points, J should not change with depth dramatically
+    # b2) Finally, make a very optically thick slab, J should go to zero inside the slab.
 
 def two_level_nlte(tau, quad, B, eps, lower_bound, upper_bound, r, niter):
 
