@@ -8,23 +8,33 @@ import matplotlib.pyplot as plt
 from scipy.special import wofz
 from rtfunctions import one_full_fs, sc_2nd_order, calc_lambda_full, calc_lambda_monoc
 from scipy.integrate import quad as q
+from numpy.polynomial.legendre import leggauss # to transform GL interval
 
 # We shall define functions, i.e., for solving (solver), for quadrature and so on...
 
 # Define "constants"
 R_sun = 696000 # km
 H = 80000 # km above the Sun's surface
-tht_crit = R_sun/(R_sun + H) # IM: Check if this sine of theta or actual theta
+tht_crit = np.arcsin(R_sun/(R_sun + H)) # IM: Check if this sine of theta or actual theta
 mu_crit = np.cos(tht_crit)
 
 def J_photosphere(tau, quad): #IM: is this the so-called J_const as we called it in written notes? 
     ND = len(tau)
-    tau_LOS = np.zeros([len(quad[3]), len(quad[1])])
-    for m in range(0, len(quad[3])):
-        for l in range(0, len(quad[1])):
-            tau_LOS[m][l] = (tau[-1] - tau[l]) / quad[3][m]
-            #print(tau_LOS[m][l])
+    tau_los = np.zeros([ND-1, len(quad[3]), len(quad[1])])
+    # TK: so as to not have tau_los = 0 at the upper boundary?
+    le = tau[-1]
+    new_tau = tau[:-1]
+    print(np.shape(new_tau))
+    # 3-D tau_los
+    for d in range(0, len(new_tau)): 
+        for m in range(0, len(quad[3])):
+            for l in range(0, len(quad[1])):
+                tau_los[d][m][l] = (le - new_tau[d]) / quad[3][m]
+                #print(tau_los[d][m][l])
     S = np.ones(ND)
+    # not sure this works as intended? What is the connection between tau and wavelength?
+
+
     '''
     for j in range(0, 500):
         J_const = np.zeros(ND)
@@ -40,7 +50,7 @@ def J_photosphere(tau, quad): #IM: is this the so-called J_const as we called it
     '''
     #I_ph = one_full_fs(tau_los, S, quad[3], quad[0], 0.0)
     #J_const, err = q(I_ph, mu_crit, 1)
-    return tau_LOS
+    return tau_los
 
     # IM: So after calculating tau(lambda, mu) at each point in the grid (so, in principle, we tau_los should be 3-D , ND, NM, NL)
     # We can calculate I_const as I_0 (mu) * np.exp(-tau_los)
@@ -224,6 +234,17 @@ def quadrature(NL, profile_type):
     #Fourth approximation
     mu = np.array([0.06943184, 0.33000948, 0.66999052, 0.93056816])
     wmu = [0.173927419815906, 0.326072580184089, 0.326072580184104, 0.173927419815900]
+
+    # TK: Transform the nodes from [-1, 1] to [mu_crit, 1]
+    mu_transformed = ((1 - mu_crit) / 2) * mu + ((mu_crit + 1) / 2)
+
+    # Do the weight transform in the same way?
+    #wmu_transformed = 
+
+    # Scaling the function f (I_ph in our case) according to the new interval
+    #integral_approximation = (1 - mu_crit) / 2 * np.sum(wmu * f(mu_transformed))
+
+    mu = mu_transformed
     
     NM = mu.shape[0]
     mu = np.asarray(mu)
@@ -276,7 +297,9 @@ tau = tau_grid(1E-4, 1E4, 12)
 quad = quadrature(121, 1)
 
 
-S_d_e2_T4 = two_level_nlte(tau, quad, 1.0, 1E-6, 0.0, 0.0, 1, 400)
+#S_d_e2_T4 = two_level_nlte(tau, quad, 1.0, 1E-6, 0.0, 0.0, 1, 400)
 
 J_ph = J_photosphere(tau, quad)
 print(J_ph)
+print(np.shape(J_ph))
+#print(J_ph[:,0,0])
