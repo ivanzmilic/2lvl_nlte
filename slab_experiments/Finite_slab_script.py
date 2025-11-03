@@ -18,7 +18,112 @@ H = 80000 # km above the Sun's surface
 tht_crit = np.arcsin(R_sun/(R_sun + H)) # IM: Check if this sine of theta or actual theta
 mu_crit = np.cos(tht_crit)
 
-def J_photosphere(tau, quad): #IM: is this the so-called J_const as we called it in written notes? 
+def quadrature(NL, profile_type):
+    # Here we compute quadrature for numerical calculation
+
+    # NL - number of wavelength points
+
+    # Reduced wavlength in Doppler widths
+    x = np.linspace(-6, 6, NL)
+
+    # Profile type: Doppler, Voight or Lorentz
+    if (profile_type == 1):
+        # Doppler profile
+        profile = 1/np.sqrt(np.pi) * np.exp(-(x**2))
+    elif profile_type == 2:
+        # Voigt profile
+        alpha = float(input("Please enter the value for alpha: "))
+        gamma = float(input("Please enter the value for gamma: "))
+        sigma = alpha / np.sqrt(2 * np.log(2))
+        # sigma = 1
+        profile = np.real(wofz((x + 1j * gamma) / sigma / np.sqrt(2)))/sigma/np.sqrt(2 * np.pi)
+    elif profile_type == 3:
+        # Lorentz profile
+        profile = 1/np.pi * (1 + x**2)
+    else:
+        print("Profile type must be 1, 2 or 3")
+    
+    # Weights for wavelengths
+    
+    wx = np.zeros(NL)
+    wx[0] = (x[1] - x[0]) * 0.5
+    wx[-1] = (x[-1] - x[-2]) * 0.5
+    wx[1:-1] = (x[2:NL] - x[0:-2]) * 0.5
+    norm = (np.sum(profile*wx))
+    wx = wx/norm
+    
+    # Angle integration:
+    
+    mu=([1./np.sqrt(3.0)])
+    wmu=[1.0]
+
+    # Third approximation
+    #mu=np.cos([0.4793425352,1.0471975512,1.4578547042])
+    #wmu=[.2777777778,0.4444444444,0.2777777778]
+    
+    #Fourth approximation
+    mu = np.array([0.06943184, 0.33000948, 0.66999052, 0.93056816])
+    wmu = [0.173927419815906, 0.326072580184089, 0.326072580184104, 0.173927419815900]
+
+    # TK: Transform the nodes from [-1, 1] to [mu_crit, 1]
+    mu_transformed = ((1 - mu_crit) / 2) * mu + ((mu_crit + 1) / 2)
+
+    # Do the weights transform in the same way?
+    #wmu_transformed = 
+
+    # Scaling the function f (I_ph in our case) according to the new interval
+    #integral_approximation = (1 - mu_crit) / 2 * np.sum(wmu * f(mu_transformed))
+
+    mu = mu_transformed
+    
+    NM = mu.shape[0]
+    mu = np.asarray(mu)
+    wmu = np.asarray(wmu)
+
+    return [profile, x, wx, mu, wmu]
+
+# Let's define a function that defines the finite slab in terms of optical depth 
+# and return the log_tau grid
+
+# We want a slab with given optical thickness taumax, and some minimum thickness at the surface. 
+# And we want given number of points per decade. 
+# AND we want the slab to be symmetric around the middle, meaning very fine separation at the edges and coarse 
+# in the middle.
+
+def tau_grid(taumin, taumax, np_per_dec):
+    # How many decades in total?
+    n_decades = np.log10(taumax / taumin)
+    print(n_decades)
+
+    # How many decades until the middle of the slab?
+    n_dec_mid = np.log10(taumax / taumin / 2)
+    print(n_dec_mid)
+
+    # Total number of points is then: 
+    ND = int (np_per_dec * n_dec_mid) + 1
+    print(ND)
+
+    # Now, the step is, actually: 
+    logstep = np.log10(taumax / taumin / 2) / (ND - 1)
+    print(logstep)
+
+    # Make log grid for a half of the slab:
+    logtau_half = np.linspace(np.log10(taumin), np.log10(taumax/2), ND)
+
+    tau_half = 10**logtau_half
+
+    #print(tau_half)
+
+    tau_second_half = taumax - tau_half[::-1]
+
+    tau_full = np.concatenate((tau_half, tau_second_half[1:]))
+
+    print(tau_full)
+
+    return tau_full
+
+
+def calc_tau_los(tau, quad): #IM: is this the so-called J_const as we called it in written notes? 
     ND = len(tau)
     tau_los = np.zeros([ND-1, len(quad[3]), len(quad[1])])
     # TK: so as to not have tau_los = 0 at the upper boundary?
@@ -31,25 +136,7 @@ def J_photosphere(tau, quad): #IM: is this the so-called J_const as we called it
             for l in range(0, len(quad[1])):
                 tau_los[d][m][l] = (le - new_tau[d]) / quad[3][m]
                 #print(tau_los[d][m][l])
-    S = np.ones(ND)
-    # not sure this works as intended? What is the connection between tau and wavelength?
-
-
-    '''
-    for j in range(0, 500):
-        J_const = np.zeros(ND)
-        L = np.zeros(ND)
-        for m in range(0, len(quad[3])):
-            for l in range(0, len(quad[1])):
-
-                I = sc_2nd_order(tau_los, S, quad[3], 0.0)
-
-                J_const = J_const + I[0] * quad[0][l] * quad[2][l] * quad[4][m] * 0.5
-
-                L = L + I[1] * quad[0][l] * quad[2][l] * quad[4][m] * 0.5
-    '''
-    #I_ph = one_full_fs(tau_los, S, quad[3], quad[0], 0.0)
-    #J_const, err = q(I_ph, mu_crit, 1)
+    
     return tau_los
 
     # IM: So after calculating tau(lambda, mu) at each point in the grid (so, in principle, we tau_los should be 3-D , ND, NM, NL)
@@ -63,6 +150,33 @@ def J_photosphere(tau, quad): #IM: is this the so-called J_const as we called it
     # b) J should be decreasing with tau inside the slab. 
     # b1) Try to make slab which is very optically thin, but still has a lot of points, J should not change with depth dramatically
     # b2) Finally, make a very optically thick slab, J should go to zero inside the slab.
+
+# TK: tau_los is calculated in a separate function
+# New function defines I_const = I_0(mu) * np.exp(-tau_los)
+# which will be argument for J_const (J_ph in written notes)
+
+def calc_I_const(S, tau_los):
+    ND = len(tau_los)
+    I = np.zeros(ND)
+    I[ND-1] = S[ND-1] # radiation equilibrium approximation, though it is not correct for slab
+    for i in range(ND-1, 0, -1):
+        for depth in tau_los:
+            for angle in depth:
+                for wvl in angle:
+                    I[i-1] = I[i] * np.exp(-wvl)
+
+    return I
+
+# TK: I am pretty sure that function and weights should have the same number of points,
+# however, we need the intensity at every depth point??
+
+def calc_J_photosphere(I, quad):
+    # Scaling the function I_const according to the new interval
+    J_const = np.zeros([len(I), len(quad[4])])
+    for d in range(0, len(I)):
+        for m in range(0, len(quad[4])):
+            J_const[d,m] = (1 - mu_crit) / 2 * np.sum(quad[4][m] * I[d])
+    return J_const
 
 def two_level_nlte(tau, quad, B, eps, lower_bound, upper_bound, r, niter):
 
@@ -186,120 +300,19 @@ def two_level_nlte(tau, quad, B, eps, lower_bound, upper_bound, r, niter):
     # return res
     return fin
 
-    return
-
-def quadrature(NL, profile_type):
-    # Here we compute quadrature for numerical calculation
-
-    # NL - number of wavelength points
-
-    # Reduced wavlength in Doppler widths
-    x = np.linspace(-6, 6, NL)
-
-    # Profile type: Doppler, Voight or Lorentz
-    if (profile_type == 1):
-        # Doppler profile
-        profile = 1/np.sqrt(np.pi) * np.exp(-(x**2))
-    elif profile_type == 2:
-        # Voigt profile
-        alpha = float(input("Please enter the value for alpha: "))
-        gamma = float(input("Please enter the value for gamma: "))
-        sigma = alpha / np.sqrt(2 * np.log(2))
-        # sigma = 1
-        profile = np.real(wofz((x + 1j * gamma) / sigma / np.sqrt(2)))/sigma/np.sqrt(2 * np.pi)
-    elif profile_type == 3:
-        # Lorentz profile
-        profile = 1/np.pi * (1 + x**2)
-    else:
-        print("Profile type must be 1, 2 or 3")
-    
-    # Weights for wavelengths
-    
-    wx = np.zeros(NL)
-    wx[0] = (x[1] - x[0]) * 0.5
-    wx[-1] = (x[-1] - x[-2]) * 0.5
-    wx[1:-1] = (x[2:NL] - x[0:-2]) * 0.5
-    norm = (np.sum(profile*wx))
-    wx = wx/norm
-    
-    # Angle integration:
-    
-    mu=([1./np.sqrt(3.0)])
-    wmu=[1.0]
-
-    # Third approximation
-    #mu=np.cos([0.4793425352,1.0471975512,1.4578547042])
-    #wmu=[.2777777778,0.4444444444,0.2777777778]
-    
-    #Fourth approximation
-    mu = np.array([0.06943184, 0.33000948, 0.66999052, 0.93056816])
-    wmu = [0.173927419815906, 0.326072580184089, 0.326072580184104, 0.173927419815900]
-
-    # TK: Transform the nodes from [-1, 1] to [mu_crit, 1]
-    mu_transformed = ((1 - mu_crit) / 2) * mu + ((mu_crit + 1) / 2)
-
-    # Do the weight transform in the same way?
-    #wmu_transformed = 
-
-    # Scaling the function f (I_ph in our case) according to the new interval
-    #integral_approximation = (1 - mu_crit) / 2 * np.sum(wmu * f(mu_transformed))
-
-    mu = mu_transformed
-    
-    NM = mu.shape[0]
-    mu = np.asarray(mu)
-    wmu = np.asarray(wmu)
-
-    return [profile, x, wx, mu, wmu]
-
-# Let's define a function that defines the finite slab in terms of optical depth 
-# and return the log_tau grid
-
-# We want a slab with given optical thickness taumax, and some minimum thickne at the surface. 
-# And we want given number of points per decade. 
-# AND we want the slab to be symmetric around the middle, meaning very fine separation at the edges and coarse 
-# in the middle.
-
-def tau_grid(taumin, taumax, np_per_dec):
-    # How many decades in total?
-    n_decades = np.log10(taumax / taumin)
-    print(n_decades)
-
-    # How many decades until the middle of the slab?
-    n_dec_mid = np.log10(taumax / taumin / 2)
-    print(n_dec_mid)
-
-    # Total number of points is then: 
-    ND = int (np_per_dec * n_dec_mid) + 1
-    print(ND)
-
-    # Now, the step is, actually: 
-    logstep = np.log10(taumax / taumin / 2) / (ND - 1)
-    print(logstep)
-
-    # Make log grid for a half of the slab:
-    logtau_half = np.linspace(np.log10(taumin), np.log10(taumax/2), ND)
-
-    tau_half = 10**logtau_half
-
-    #print(tau_half)
-
-    tau_second_half = taumax - tau_half[::-1]
-
-    tau_full = np.concatenate((tau_half, tau_second_half[1:]))
-
-    print(tau_full)
-
-    return tau_full
 
 # Let us recreate values from Mihalas (1978)
 tau = tau_grid(1E-4, 1E4, 12)
 quad = quadrature(121, 1)
 
 
-#S_d_e2_T4 = two_level_nlte(tau, quad, 1.0, 1E-6, 0.0, 0.0, 1, 400)
+S_d_e2_T4 = two_level_nlte(tau, quad, 1.0, 1E-6, 0.0, 0.0, 1, 400)
 
-J_ph = J_photosphere(tau, quad)
-print(J_ph)
-print(np.shape(J_ph))
-#print(J_ph[:,0,0])
+#tau_los = calc_tau_los(tau, quad)
+#print(tau_los)
+#print(np.shape(tau_los))
+#print(tau_los[:,0,0])
+
+#I_const = calc_Iconst(S_d_e2_T4, tau_los)
+#print(I_const)
+
