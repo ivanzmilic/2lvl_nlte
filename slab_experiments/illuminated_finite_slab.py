@@ -33,6 +33,7 @@ class Slab:
         self.H = H  # Height above the surface
         self.tau = np.linspace(0, tau_max, ND) # This is too simple, but we will have a number of methods to calculate this
         self.S = np.zeros(ND)  # Source function initialization
+        self.J_scat = np.zeros(ND)  # Scattered mean intensity initialization
 
     def compute_tau(self):
         # As the most robust method we will use log-spaced grid on both sides.
@@ -52,11 +53,13 @@ class Slab:
     def calculate_J_scat(self):
         # This function has it's own angle and frequency integration
         # So, start by creating those:
-        x_values = np.linspace(-5, 5, 101)  # Frequency grid
+        NL = 101
+        x_values = np.linspace(-5, 5, NL)  # Frequency grid
         x_weights = np.ones_like(x_values) / len(x_values)  # Uniform weights for simplicity
 
         # For mu values we use Gaussian quadrature
-        mu_values, mu_weights = np.polynomial.legendre.leggauss(8)  # 8-point Gauss-Legendre quadrature
+        NM = 8
+        mu_values, mu_weights = np.polynomial.legendre.leggauss(NM)  # 8-point Gauss-Legendre quadrature
         # We will transform according to the height H over the solar limb
         mu_crit = (1.0 - (const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0))**0.5
         print ("info::slab::calculate_J_scat: mu_crit = ", mu_crit)
@@ -67,14 +70,29 @@ class Slab:
         print ("info::slab::calculate_J_scat: mu_values = ", mu_values)
         print ("info::slab::calculate_J_scat: mu_weights = ", mu_weights)
         # Note that the mu_weights will sum to (1-mu_crit), which is what we want.
-        # And additionally, later we will have to multiply by 2 to get appropriate J.
+        # And additionally, later we will have to divide by 2 to get appropriate J.
 
         # Now we can compute the J_inc
-        #J_inc = np.zeros(self.ND)
-        #for i in range(self.ND):
-        #    J_inc[i] = np.sum(self.B[i] * x_weights)
+        J_inc = np.zeros(self.ND)
+        for i in range(self.ND):
+            for m in range(0, NM):
+                mu = mu_values[m]
+                w_mu = mu_weights[m]
+                for n in range(0, NL):
+                    x = x_values[n]
+                    w_x = x_weights[n]
+                    # Fetch the appropriate incident intensity
+                    I_inc = get_boundary_radiation(mu, x)  # Simple Gaussian profile
+                    # Attenuation by optical depth
+                    tau_eff = (self.tau_max - self.tau[i]) / mu
+                    I_attenuated = I_inc * np.exp(-tau_eff)
+                    J_inc[i] += I_attenuated * w_mu * w_x / 2.0  # Divide by 2 for J    
 
-        #return J_inc
+        self.J_scat = J_inc
+        del(J_inc)
+
+def get_boundary_radiation(mu, x):
+    return 1.0     
 
 # if main
 if __name__ == "__main__":
@@ -82,7 +100,7 @@ if __name__ == "__main__":
 
     # Define the input parameters
     ND = 101
-    tau_max = 10.0
+    tau_max = 0.01
     epsilon = np.ones(ND) * 1e-6
     B = np.ones(ND) * 1.0
 
@@ -92,3 +110,4 @@ if __name__ == "__main__":
     
     # Next, calculate the J_scattered in the slab
     slab.calculate_J_scat()
+    print ("info::main: J_scat = ", slab.J_scat)
