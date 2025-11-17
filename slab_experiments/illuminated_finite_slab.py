@@ -35,6 +35,10 @@ class Slab:
         self.S = np.zeros(ND)  # Source function initialization
         self.J_scat = np.zeros(ND)  # Scattered mean intensity initialization
 
+        # toy model absorption profile
+        self.phi = np.exp(-((np.linspace(-5, 5, 101))**2))  # Simple Gaussian profile
+        self.phi /= np.trapz(self.phi, np.linspace(-5, 5, 101))  # Normalize
+
     def compute_tau(self):
         # As the most robust method we will use log-spaced grid on both sides.
         # First we check the total ND, and make sure it's odd
@@ -82,17 +86,41 @@ class Slab:
                     x = x_values[n]
                     w_x = x_weights[n]
                     # Fetch the appropriate incident intensity
-                    I_inc = get_boundary_radiation(mu, x)  # Simple Gaussian profile
+                    I_inc = self.get_boundary_radiation(mu, x)  # Simple Gaussian profile
                     # Attenuation by optical depth
-                    tau_eff = (self.tau_max - self.tau[i]) / mu
+                    tau_eff = (self.tau_max - self.tau[i]) / mu * self.phi[n]
                     I_attenuated = I_inc * np.exp(-tau_eff)
                     J_inc[i] += I_attenuated * w_mu * w_x / 2.0  # Divide by 2 for J    
 
         self.J_scat = J_inc
         del(J_inc)
 
-def get_boundary_radiation(mu, x):
-    return 1.0     
+    def get_boundary_radiation(self, mu, x):
+        # Here we are going to write a function that relates the mu in the slab referent frame to the outgoing 
+        # limb darkening emerging from the solar surface. For the moment we will assume it is wavelength independent.     
+        factor = 1.0 - ((1.0 - mu**2.0) * const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0)
+        if factor < 0.0:
+            return 0.0
+        else:
+            mu_0 = factor**0.5
+            # Simple linear limb darkening law
+            I_0 = 0.4 + 0.6 * mu_0
+            return I_0
+        
+    def solve_source_function(self, max_iter=1000, tol=1e-6):
+        # Here we will implement the ALO method to solve for the source function S
+        # This below is copilot generated, does not make sense.
+        for iteration in range(max_iter):
+            S_old = self.S.copy()
+            for i in range(self.ND):
+                J_total = self.J_scat[i]  # For now, only scattered radiation
+                self.S[i] = (1 - self.epsilon[i]) * J_total + self.epsilon[i] * self.B[i]
+            # Check for convergence
+            if np.max(np.abs(self.S - S_old)) < tol:
+                print(f"Converged after {iteration} iterations.")
+                break
+        else:
+            print("info::solve_source_function::source function did not converge within the maximum number of iterations.")
 
 # if main
 if __name__ == "__main__":
@@ -100,7 +128,7 @@ if __name__ == "__main__":
 
     # Define the input parameters
     ND = 101
-    tau_max = 0.01
+    tau_max = 1.0
     epsilon = np.ones(ND) * 1e-6
     B = np.ones(ND) * 1.0
 
@@ -110,4 +138,4 @@ if __name__ == "__main__":
     
     # Next, calculate the J_scattered in the slab
     slab.calculate_J_scat()
-    print ("info::main: J_scat = ", slab.J_scat)
+    #print ("info::main: J_scat = ", slab.J_scat)
