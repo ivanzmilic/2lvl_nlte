@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 import astropy.units as units
 import astropy.constants as const
 
+from rtfunctions import one_full_fs, sc_2nd_order, calc_lambda_full, calc_lambda_monoc
+
 # Some basic description, so we know what we are doing: 
 # This script solves the NLTE line formation for a 2-level atom in an illuminated finite slab.
 # The slab is illuminated from one side by a radiation field with a given angular 
@@ -37,7 +39,16 @@ class Slab:
 
         # toy model absorption profile
         self.phi = np.exp(-((np.linspace(-5, 5, 101))**2))  # Simple Gaussian profile
-        self.phi /= np.trapz(self.phi, np.linspace(-5, 5, 101))  # Normalize
+        self.phi /= np.trapezoid(self.phi, np.linspace(-5, 5, 101))  # Normalize
+
+        # eventually this shall probably be a parameter
+        self.r = 1 # line and continuum opacity ratio
+
+        # store quadrature arrays (will be set in calculate_J_scat)
+        self.mu_values = None
+        self.mu_weights = None
+        self.x_values = None
+        self.x_weights = None
 
     def compute_tau(self):
         # As the most robust method we will use log-spaced grid on both sides.
@@ -76,6 +87,15 @@ class Slab:
         # Note that the mu_weights will sum to (1-mu_crit), which is what we want.
         # And additionally, later we will have to divide by 2 to get appropriate J.
 
+
+        # Save for later use in solve_source_function
+        self.mu_values = mu_values
+        self.mu_weights = mu_weights
+        self.x_values = x_values
+        self.x_weights = x_weights
+        self.NM = NM
+        self.NL = NL
+
         # Now we can compute the J_inc
         J_inc = np.zeros(self.ND)
         for i in range(self.ND):
@@ -110,6 +130,7 @@ class Slab:
     def solve_source_function(self, max_iter=1000, tol=1e-6):
         # Here we will implement the ALO method to solve for the source function S
         # This below is copilot generated, does not make sense.
+        '''
         for iteration in range(max_iter):
             S_old = self.S.copy()
             for i in range(self.ND):
@@ -121,6 +142,44 @@ class Slab:
                 break
         else:
             print("info::solve_source_function::source function did not converge within the maximum number of iterations.")
+        '''    
+        # Here we will implement ALO method to compute the source function S 
+        L_full = calc_lambda_full(self.tau, self.mu_values, self.mu_weights, self.phi, self.x_weights)
+        A = np.eye(self.ND) - (1.0 - np.diag(self.epsilon)) * L_full
+        b = self.epsilon * self.B 
+        self.S = np.linalg.solve(A, b)
+
+
+    def formal_solution(self, max_iter = 1000, tol = 1e-6):
+        # Here we want to implement the formal solution to compute the source function S
+        # using the ALI approach
+        # Initialize S as Planck function
+        self.S = self.B.copy()
+        for iteration in range(max_iter):
+            J = np.zeros(self.ND)
+            L = np.zeros(self.ND)
+            for m in range(0, self.NM):
+                for l in range(0, self.NL):
+                    mu = self.mu_values[m]
+                    w_mu = self.mu_weights[m]
+
+                    # Outward intensity
+                    I_lambda  = sc_2nd_order(self.tau * self.phi[l] * self.r, self.S, mu[m], 1.0)
+                    J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
+                    L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
+
+                    # Inward intensity
+                    I_lambda  = sc_2nd_order(self.tau * self.phi[l] * self.r, self.S, -mu[m], 0.0)
+                    J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
+                    L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
+            # Update source function
+            dS = (self.epsilon * self.B + (1. - self.epsilon) * J - self.S) / (1. - (1. - self.epsilon) * L)
+            # Check for convergence
+            if np.max(np.abs(dS/self.S)) < tol:
+                print(f"Converged after {iteration} iterations.")
+                break
+        else:
+            print("info::formal_solution::source function did not converge within the maximum number of iterations.")
 
 # if main
 if __name__ == "__main__":
@@ -139,3 +198,9 @@ if __name__ == "__main__":
     # Next, calculate the J_scattered in the slab
     slab.calculate_J_scat()
     #print ("info::main: J_scat = ", slab.J_scat)
+
+    # Now, solve for the source function S
+    slab.solve_source_function()
+    print ("info::main: Source function S = ", slab.S)
+    plt.semilogy(np.log10(slab.tau),slab.S)
+    plt.show()
