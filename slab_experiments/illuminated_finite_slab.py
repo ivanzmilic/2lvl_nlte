@@ -64,7 +64,38 @@ class Slab:
         tau_second_half = self.tau_max + tau_first_half[0] - tau_first_half[::-1]
         # Put these two together
         self.tau = np.concatenate((tau_first_half, tau_second_half[1:]))
+
+    def calculate_weights(self):
+        # This function will calculate the quadrature weights for angle and frequency
+        # We will need these for two systems of reference
+        NL = 101
+        x_values = np.linspace(-5, 5, NL)  # Frequency grid
+        x_weights = np.ones_like(x_values) / len(x_values)  # Uniform weights for simplicity
+
+        # For mu values we use Gaussian quadrature
+        NM = 8
+        mu_values, mu_weights = np.polynomial.legendre.leggauss(NM)  # 8-point Gauss-Legendre quadrature
+        # We will transform according to the height H over the solar limb
+        mu_crit = (1.0 - (const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0))**0.5
+        print ("info::slab::calculate_J_scat: mu_crit = ", mu_crit)
         
+        # Now shift the weights and mu_values to pertain to the range [mu_crit, 1.0]
+        mu_values = 0.5 * (mu_values + 1.0) * (1.0 - mu_crit) + mu_crit
+        mu_weights = 0.5 * mu_weights * (1.0 - mu_crit)
+
+        print ("info::slab::mu_values = ", mu_values)
+        print ("info::slab::mu_weights = ", mu_weights)
+        print ("info::slab::x_values = ", x_values)
+        print ("info::slab::x_weights = ", x_weights)
+
+        self.mu_values = mu_values
+        self.mu_weights = mu_weights
+        self.x_values = x_values
+        self.x_weights = x_weights
+        self.NM = NM
+        self.NL = NL
+
+
     def calculate_J_scat(self):
         # This function has it's own angle and frequency integration
         # So, start by creating those:
@@ -143,7 +174,8 @@ class Slab:
         else:
             print("info::solve_source_function::source function did not converge within the maximum number of iterations.")
         '''    
-        # Here we will implement ALO method to compute the source function S 
+        # Here we will implement ALO method to compute the source function S
+        # But first we need to calculate the full lambda operator 
         L_full = calc_lambda_full(self.tau, self.mu_values, self.mu_weights, self.phi, self.x_weights)
         A = np.eye(self.ND) - (1.0 - np.diag(self.epsilon)) * L_full
         b = self.epsilon * self.B 
@@ -202,5 +234,5 @@ if __name__ == "__main__":
     # Now, solve for the source function S
     slab.solve_source_function()
     print ("info::main: Source function S = ", slab.S)
-    plt.semilogy(np.log10(slab.tau),slab.S)
+    plt.plot(np.log10(slab.tau),slab.S)
     plt.show()
