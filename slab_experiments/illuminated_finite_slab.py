@@ -39,7 +39,7 @@ class Slab:
 
         # toy model absorption profile
         self.phi = np.exp(-((np.linspace(-5, 5, 101))**2))  # Simple Gaussian profile
-        self.phi /= np.trapezoid(self.phi, np.linspace(-5, 5, 101))  # Normalize
+        self.phi /= np.trapz(self.phi, np.linspace(-5, 5, 101))  # Normalize
 
         # eventually this shall probably be a parameter
         self.r = 1 # line and continuum opacity ratio
@@ -49,6 +49,8 @@ class Slab:
         self.mu_weights = None
         self.x_values = None
         self.x_weights = None
+
+        self.compute_tau()  # Compute the tau grid, this function can also be used externally
 
     def compute_tau(self):
         # As the most robust method we will use log-spaced grid on both sides.
@@ -65,77 +67,53 @@ class Slab:
         # Put these two together
         self.tau = np.concatenate((tau_first_half, tau_second_half[1:]))
 
-    def calculate_weights(self):
+    def calculate_weights(self, NMin, NLin, verbose=False):
         # This function will calculate the quadrature weights for angle and frequency
         # We will need these for two systems of reference
-        NL = 101
-        x_values = np.linspace(-5, 5, NL)  # Frequency grid
+        self.NL = NLin
+        x_values = np.linspace(-5, 5, self.NL)  # Frequency grid
         x_weights = np.ones_like(x_values) / len(x_values)  # Uniform weights for simplicity
 
         # For mu values we use Gaussian quadrature
-        NM = 8
-        mu_values, mu_weights = np.polynomial.legendre.leggauss(NM)  # 8-point Gauss-Legendre quadrature
+        self.NM = NMin
+        mu_values, mu_weights = np.polynomial.legendre.leggauss(self.NM)  # 8-point Gauss-Legendre quadrature
         # We will transform according to the height H over the solar limb
         mu_crit = (1.0 - (const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0))**0.5
-        print ("info::slab::calculate_J_scat: mu_crit = ", mu_crit)
+        if (verbose):
+            print ("info::slab::calculate_J_scat: mu_crit = ", mu_crit)
         
         # Now shift the weights and mu_values to pertain to the range [mu_crit, 1.0]
         mu_values = 0.5 * (mu_values + 1.0) * (1.0 - mu_crit) + mu_crit
         mu_weights = 0.5 * mu_weights * (1.0 - mu_crit)
 
-        print ("info::slab::mu_values = ", mu_values)
-        print ("info::slab::mu_weights = ", mu_weights)
-        print ("info::slab::x_values = ", x_values)
-        print ("info::slab::x_weights = ", x_weights)
+        if (verbose):
+            print ("info::slab::mu_values = ", mu_values)
+            print ("info::slab::mu_weights = ", mu_weights)
+            print ("info::slab::x_values = ", x_values)
+            print ("info::slab::x_weights = ", x_weights)
 
         self.mu_values = mu_values
         self.mu_weights = mu_weights
         self.x_values = x_values
         self.x_weights = x_weights
-        self.NM = NM
-        self.NL = NL
-
+        
 
     def calculate_J_scat(self):
         # This function has it's own angle and frequency integration
         # So, start by creating those:
         NL = 101
-        x_values = np.linspace(-5, 5, NL)  # Frequency grid
-        x_weights = np.ones_like(x_values) / len(x_values)  # Uniform weights for simplicity
-
-        # For mu values we use Gaussian quadrature
         NM = 8
-        mu_values, mu_weights = np.polynomial.legendre.leggauss(NM)  # 8-point Gauss-Legendre quadrature
-        # We will transform according to the height H over the solar limb
-        mu_crit = (1.0 - (const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0))**0.5
-        print ("info::slab::calculate_J_scat: mu_crit = ", mu_crit)
-        
-        # Now shift the weights and mu_values to pertain to the range [mu_crit, 1.0]
-        mu_values = 0.5 * (mu_values + 1.0) * (1.0 - mu_crit) + mu_crit
-        mu_weights = 0.5 * mu_weights * (1.0 - mu_crit)
-        print ("info::slab::calculate_J_scat: mu_values = ", mu_values)
-        print ("info::slab::calculate_J_scat: mu_weights = ", mu_weights)
-        # Note that the mu_weights will sum to (1-mu_crit), which is what we want.
-        # And additionally, later we will have to divide by 2 to get appropriate J.
-
-
-        # Save for later use in solve_source_function
-        self.mu_values = mu_values
-        self.mu_weights = mu_weights
-        self.x_values = x_values
-        self.x_weights = x_weights
-        self.NM = NM
-        self.NL = NL
+        self.calculate_weights(NM, NL, verbose=False)
 
         # Now we can compute the J_inc
         J_inc = np.zeros(self.ND)
         for i in range(self.ND):
             for m in range(0, NM):
-                mu = mu_values[m]
-                w_mu = mu_weights[m]
+                mu = self.mu_values[m]
+                w_mu = self.mu_weights[m]
                 for n in range(0, NL):
-                    x = x_values[n]
-                    w_x = x_weights[n]
+                    x = self.x_values[n]
+                    w_x = self.x_weights[n]
                     # Fetch the appropriate incident intensity
                     I_inc = self.get_boundary_radiation(mu, x)  # Simple Gaussian profile
                     # Attenuation by optical depth
@@ -158,27 +136,18 @@ class Slab:
             I_0 = 0.4 + 0.6 * mu_0
             return I_0
         
-    def solve_source_function(self, max_iter=1000, tol=1e-6):
-        # Here we will implement the ALO method to solve for the source function S
-        # This below is copilot generated, does not make sense.
-        '''
-        for iteration in range(max_iter):
-            S_old = self.S.copy()
-            for i in range(self.ND):
-                J_total = self.J_scat[i]  # For now, only scattered radiation
-                self.S[i] = (1 - self.epsilon[i]) * J_total + self.epsilon[i] * self.B[i]
-            # Check for convergence
-            if np.max(np.abs(self.S - S_old)) < tol:
-                print(f"Converged after {iteration} iterations.")
-                break
-        else:
-            print("info::solve_source_function::source function did not converge within the maximum number of iterations.")
-        '''    
+    def solve_source_function(self, max_iter=1000, tol=1e-6, verbose=False):
+        # As a first step, we will implement a direct matrix inversion to solve NLTE problem. No iterations needed! 
+        # Just for the exercise, let's calculate new mu grid and weights here:
+        NL = 101
+        NM = 3
+        self.calculate_weights(NM, NL, verbose=False)
+          
         # Here we will implement ALO method to compute the source function S
         # But first we need to calculate the full lambda operator 
         L_full = calc_lambda_full(self.tau, self.mu_values, self.mu_weights, self.phi, self.x_weights)
         A = np.eye(self.ND) - (1.0 - np.diag(self.epsilon)) * L_full
-        b = self.epsilon * self.B 
+        b = self.epsilon * self.B + (1.0 - self.epsilon) * self.J_scat
         self.S = np.linalg.solve(A, b)
 
 
@@ -219,13 +188,13 @@ if __name__ == "__main__":
 
     # Define the input parameters
     ND = 101
-    tau_max = 1.0
+    tau_max = 1000.0
     epsilon = np.ones(ND) * 1e-6
-    B = np.ones(ND) * 1.0
+    B = np.ones(ND) * 10000.0
 
     # Test the tau calculation
     slab = Slab(ND, tau_max, epsilon, B, H=80e6) # Height of 80 Mm
-    slab.compute_tau()
+    
     
     # Next, calculate the J_scattered in the slab
     slab.calculate_J_scat()
@@ -234,5 +203,20 @@ if __name__ == "__main__":
     # Now, solve for the source function S
     slab.solve_source_function()
     print ("info::main: Source function S = ", slab.S)
+    
+    # Plot the source function vs tau, and J_scat vs tau
+    plt.figure(figsize=(8,6))
     plt.plot(np.log10(slab.tau),slab.S)
-    plt.show()
+    plt.plot(np.log10(slab.tau),slab.J_scat)
+    plt.xlabel("log10(Tau)")
+    plt.ylabel("Source Function / J_scat")
+    plt.title("Source Function and J_scat vs Optical Depth")
+    plt.legend(["Source Function S","J_scat"])
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig(f"source_function_jscat_{ND}_{tau_max}.png",bbox_inches='tight')
+    #plt.show()
+
+    # Now, solve for the emergent intensity given the boundary condition:
+    #mu_obs = 1.0  # Observing angle cosine
+    #slab.formal_solution(x, mu_obs) # Keep in mind that this function can be written in a way so it can be also used in the ALO method
