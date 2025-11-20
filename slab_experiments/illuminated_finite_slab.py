@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import astropy.units as units
 import astropy.constants as const
-
+from scipy.special import wofz
 from rtfunctions import one_full_fs, sc_2nd_order, calc_lambda_full, calc_lambda_monoc
 
 # Some basic description, so we know what we are doing: 
@@ -38,8 +38,11 @@ class Slab:
         self.J_scat = np.zeros(ND)  # Scattered mean intensity initialization
 
         # toy model absorption profile
-        self.phi = np.exp(-((np.linspace(-5, 5, 101))**2))  # Simple Gaussian profile
-        self.phi /= np.trapz(self.phi, np.linspace(-5, 5, 101))  # Normalize
+        #self.phi = np.exp(-((np.linspace(-5, 5, 101))**2))  # Simple Gaussian profile
+        #self.phi /= np.trapz(self.phi, np.linspace(-5, 5, 101))  # Normalize
+
+        # Voight profile
+        self.voigt_profile(np.linspace(-10, 10, 41), 0.01) # NL is usually 2 * range + 1
 
         # eventually this shall probably be a parameter
         self.r = 1 # line and continuum opacity ratio
@@ -67,11 +70,23 @@ class Slab:
         # Put these two together
         self.tau = np.concatenate((tau_first_half, tau_second_half[1:]))
 
+    def voigt_profile(self, x, a):
+        
+        # Normalized Voigt profile (unit integral over x).
+        # Uses scipy.special.wofz: V(x,a) = Re[w(x + i a)] / sqrt(pi).
+        # Here, x is the wavelength/frequency offset in Doppler units,
+        # and a is the damping parameter; x will be replaced with observed wavelength grid later.
+        z = x + 1j * a
+        self.phi = np.real(wofz(z)) / np.sqrt(np.pi)
+        # Ensure strict normalization on provided x grid
+        self.phi /= np.trapz(self.phi, x)
+
+
     def calculate_weights(self, NMin, NLin, verbose=False):
         # This function will calculate the quadrature weights for angle and frequency
         # We will need these for two systems of reference
         self.NL = NLin
-        x_values = np.linspace(-5, 5, self.NL)  # Frequency grid
+        x_values = np.linspace(-10, 10, self.NL)  # Frequency grid
         x_weights = np.ones_like(x_values) / len(x_values)  # Uniform weights for simplicity
 
         # For mu values we use Gaussian quadrature
@@ -101,7 +116,7 @@ class Slab:
     def calculate_J_scat(self):
         # This function has it's own angle and frequency integration
         # So, start by creating those:
-        NL = 101
+        NL = 41
         NM = 8
         self.calculate_weights(NM, NL, verbose=False)
 
@@ -133,13 +148,15 @@ class Slab:
         else:
             mu_0 = factor**0.5
             # Simple linear limb darkening law
+            # For more accuarate modeling we can use Claret coefficients for V filter (https://ui.adsabs.harvard.edu/abs/2000A&A...363.1081C/abstract)
+            # I_0 = 1 - 0.5311 * (1 - mu_0**0.5) + 0.0545 * (1 - mu_0) - 0.7301 * (1 - mu_0**1.5) + 0.4053 * (1 - mu_0**2)
             I_0 = 0.4 + 0.6 * mu_0
             return I_0
         
     def solve_source_function(self, max_iter=1000, tol=1e-6, verbose=False):
         # As a first step, we will implement a direct matrix inversion to solve NLTE problem. No iterations needed! 
         # Just for the exercise, let's calculate new mu grid and weights here:
-        NL = 101
+        NL = 41
         NM = 3
         self.calculate_weights(NM, NL, verbose=False)
           
@@ -188,9 +205,9 @@ if __name__ == "__main__":
 
     # Define the input parameters
     ND = 101
-    tau_max = 1000.0
+    tau_max = 100.0
     epsilon = np.ones(ND) * 1e-6
-    B = np.ones(ND) * 10000.0
+    B = np.ones(ND) * 100.0
 
     # Test the tau calculation
     slab = Slab(ND, tau_max, epsilon, B, H=80e6) # Height of 80 Mm
