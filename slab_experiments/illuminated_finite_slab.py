@@ -124,7 +124,7 @@ class Slab:
         # So, start by creating those:
         NL = 41
         NM = 8
-        self.calculate_weights(NM, NL, verbose=False)
+        self.calculate_profiles_and_weights(NM, NL, verbose=False)
 
         # Now we can compute the J_inc
         J_inc = np.zeros(self.ND)
@@ -165,7 +165,7 @@ class Slab:
         # Just for the exercise, let's calculate new mu grid and weights here:
         NL = 41
         NM = 3
-        self.calculate_weights(NM, NL, verbose=False)
+        self.calculate_profiles_and_weights(NM, NL, verbose=False)
           
         # Here we will implement ALO method to compute the source function S
         # But first we need to calculate the full lambda operator 
@@ -185,7 +185,7 @@ class Slab:
         # Initialize weights for angle and frequency integration, same as in the function above
         NL = 41
         NM = 3
-        self.calculate_weights(NM, NL, verbose=False)
+        self.calculate_profiles_and_weights(NM, NL, verbose=False)
           
         for iteration in range(max_iter):
             
@@ -195,18 +195,22 @@ class Slab:
                 for l in range(0, self.NL):
                     mu = self.mu_values[m]
                     w_mu = self.mu_weights[m]
+                    tau_lambda = self.tau * (self.phi[l] + self.r)
+                    #print(tau_lambda.shape, self.S.shape, mu)
+                    
 
                     # Outward intensity
-                    I_lambda  = sc_2nd_order(self.tau * (self.phi[l] + self.r), self.S, mu[m], 1.0)
-                    J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
-                    L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
+                    I_lambda  = sc_2nd_order(tau_lambda, self.S, mu, 0.0)
+                    J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+                    L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
 
                     # Inward intensity
-                    I_lambda  = sc_2nd_order(self.tau * (self.phi[l] + self.r), self.S, -mu[m], 0.0)
-                    J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
-                    L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
-            # Update source function
-            dS = (self.epsilon * self.B + (1. - self.epsilon) * J - self.S) / (1. - (1. - self.epsilon) * L)
+                    I_lambda  = sc_2nd_order(tau_lambda, self.S, -mu, 0.0)
+                    J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+                    L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+            # Update source function taking into account J_scat  
+            dS = (self.epsilon * self.B + (1. - self.epsilon) * J + self.J_scat - self.S) / (1. - (1. - self.epsilon) * L)
+            self.S += dS
             # Check for convergence
             if np.max(np.abs(dS/self.S)) < tol:
                 print(f"Converged after {iteration} iterations.")
@@ -214,15 +218,20 @@ class Slab:
         else:
             print("info::formal_solution::source function did not converge within the maximum number of iterations.")
 
+    def formal_solution_given_direction(self, mu_obs, x_obs, boundary_condition):
+        # This function computes the emergent intensity at the surface of the slab
+        # for a given observing angle mu_obs and observed frequency x_obs
+        # for a given boundary condition (e.g., incident intensity at the bottom of the slab)
+        self.S = self.S  # Ensure S is up to date
 # if main
 if __name__ == "__main__":
     # Here we will define stuff and write proto-code to understand what is going on.
 
     # Define the input parameters
     ND = 101
-    tau_max = 100.0
+    tau_max = 1.0
     epsilon = np.ones(ND) * 1e-6
-    B = np.ones(ND) * 100.0
+    B = np.ones(ND) * 1.0
 
     # Test the tau calculation
     slab = Slab(ND, tau_max, epsilon, B, H=80e6) # Height of 80 Mm
@@ -234,16 +243,22 @@ if __name__ == "__main__":
 
     # Now, solve for the source function S
     slab.solve_source_function()
-    print ("info::main: Source function S = ", slab.S)
-    
+    S_direct = slab.S
+    print ("info::main: Source function S = ", S_direct)
+
+    slab.solve_source_function_ALO()
+    S_alo = slab.S
+    print ("info::main: Source function S (ALO) = ", S_alo)
+
     # Plot the source function vs tau, and J_scat vs tau
     plt.figure(figsize=(8,6))
-    plt.plot(np.log10(slab.tau),slab.S)
-    plt.plot(np.log10(slab.tau),slab.J_scat)
+    plt.plot(np.log10(slab.tau),S_direct, linestyle = "-", linewidth = 3, color = "orange", label="S, directly solved")
+    plt.plot(np.log10(slab.tau),slab.J_scat, label="J_scat")
+    plt.plot(np.log10(slab.tau),S_alo, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
     plt.xlabel("log10(Tau)")
     plt.ylabel("Source Function / J_scat")
     plt.title("Source Function and J_scat vs Optical Depth")
-    plt.legend(["Source Function S","J_scat"])
+    plt.legend(["Source Function S","J_scat","Source Function S (ALO)"])
     plt.grid()
     plt.tight_layout()
     plt.savefig(f"source_function_jscat_{ND}_{tau_max}.png",bbox_inches='tight')
