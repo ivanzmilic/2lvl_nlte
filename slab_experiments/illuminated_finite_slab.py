@@ -26,7 +26,9 @@ from rtfunctions import one_full_fs, sc_2nd_order, calc_lambda_full, calc_lambda
 
 # Start by defining the slab class
 class Slab:
-    def __init__(self, ND, tau_max, epsilon, B, H):
+    def __init__(self, ND, tau_max, epsilon, B, H): # Still some stuff to add to the input, e.g. a = ... ,r =... and so on, think about this. 
+
+        # Be cautious!!! r, a, epsilon, profile, etc, can be depth dependent eventually!!!
         
         self.ND = ND # Number of depth points
         self.tau_max = tau_max # Total optical depth of the slab
@@ -36,17 +38,15 @@ class Slab:
         self.tau = np.linspace(0, tau_max, ND) # This is too simple, but we will have a number of methods to calculate this
         self.S = np.zeros(ND)  # Source function initialization
         self.J_scat = np.zeros(ND)  # Scattered mean intensity initialization
+        self.r = 0 # line and continuum opacity ratio, eventually this shall probably be a parameter
+        self.a = 0.0  # Voigt profile damping parameter
+        
 
         # toy model absorption profile
         #self.phi = np.exp(-((np.linspace(-5, 5, 101))**2))  # Simple Gaussian profile
         #self.phi /= np.trapz(self.phi, np.linspace(-5, 5, 101))  # Normalize
 
-        # Voight profile
-        self.voigt_profile(np.linspace(-10, 10, 41), 0.01) # NL is usually 2 * range + 1
-
-        # eventually this shall probably be a parameter
-        self.r = 1 # line and continuum opacity ratio
-
+        
         # store quadrature arrays (will be set in calculate_J_scat)
         self.mu_values = None
         self.mu_weights = None
@@ -82,13 +82,19 @@ class Slab:
         self.phi /= np.trapz(self.phi, x)
 
 
-    def calculate_weights(self, NMin, NLin, verbose=False):
+    def calculate_profiles_and_weights(self, NMin, NLin, verbose=False):
         # This function will calculate the quadrature weights for angle and frequency
         # We will need these for two systems of reference
         self.NL = NLin
         x_values = np.linspace(-10, 10, self.NL)  # Frequency grid
+        self.voigt_profile(x_values, 0.0) # NL is usually 2 * range + 1
         x_weights = np.ones_like(x_values) / len(x_values)  # Uniform weights for simplicity
-
+        # Normalize the weights so the integral of the profile is 1
+        norm = np.trapz(self.phi, x_values)
+        if (verbose):
+            print ("info::slab::calculate_profiles_and_weights: profile normalization before = ", norm)
+        x_weights /= norm
+        
         # For mu values we use Gaussian quadrature
         self.NM = NMin
         mu_values, mu_weights = np.polynomial.legendre.leggauss(self.NM)  # 8-point Gauss-Legendre quadrature
@@ -149,6 +155,7 @@ class Slab:
             mu_0 = factor**0.5
             # Simple linear limb darkening law
             # For more accuarate modeling we can use Claret coefficients for V filter (https://ui.adsabs.harvard.edu/abs/2000A&A...363.1081C/abstract)
+            # Plot how this below looks like to make sure it goes from 1.0 at mu=1.0 to ~0.4 at mu=0.0 (or so)
             # I_0 = 1 - 0.5311 * (1 - mu_0**0.5) + 0.0545 * (1 - mu_0) - 0.7301 * (1 - mu_0**1.5) + 0.4053 * (1 - mu_0**2)
             I_0 = 0.4 + 0.6 * mu_0
             return I_0
@@ -168,12 +175,20 @@ class Slab:
         self.S = np.linalg.solve(A, b)
 
 
-    def formal_solution(self, max_iter = 1000, tol = 1e-6):
-        # Here we want to implement the formal solution to compute the source function S
-        # using the ALI approach
+    def solve_source_function_ALO(self, max_iter = 1000, tol = 1e-6):
+        
+        # Here we want to implement an interative approach to compute the source function S
+        # using the ALI/ALO approach
         # Initialize S as Planck function
         self.S = self.B.copy()
+
+        # Initialize weights for angle and frequency integration, same as in the function above
+        NL = 41
+        NM = 3
+        self.calculate_weights(NM, NL, verbose=False)
+          
         for iteration in range(max_iter):
+            
             J = np.zeros(self.ND)
             L = np.zeros(self.ND)
             for m in range(0, self.NM):
@@ -182,12 +197,12 @@ class Slab:
                     w_mu = self.mu_weights[m]
 
                     # Outward intensity
-                    I_lambda  = sc_2nd_order(self.tau * self.phi[l] * self.r, self.S, mu[m], 1.0)
+                    I_lambda  = sc_2nd_order(self.tau * (self.phi[l] + self.r), self.S, mu[m], 1.0)
                     J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
                     L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
 
                     # Inward intensity
-                    I_lambda  = sc_2nd_order(self.tau * self.phi[l] * self.r, self.S, -mu[m], 0.0)
+                    I_lambda  = sc_2nd_order(self.tau * (self.phi[l] + self.r), self.S, -mu[m], 0.0)
                     J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
                     L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu[m] * 0.5
             # Update source function
