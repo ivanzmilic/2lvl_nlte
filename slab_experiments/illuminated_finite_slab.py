@@ -82,7 +82,7 @@ class Slab:
         self.phi /= np.trapz(self.phi, x)
 
 
-    def calculate_profiles_and_weights(self, NMin, NLin, verbose=False):
+    def calculate_profiles_and_weights(self, NMin, NLin, verbose=False, diffuse=True):
         # This function will calculate the quadrature weights for angle and frequency
         # We will need these for two systems of reference
         self.NL = NLin
@@ -96,12 +96,16 @@ class Slab:
         x_weights /= norm
         
         # For mu values we use Gaussian quadrature
+
         self.NM = NMin
         mu_values, mu_weights = np.polynomial.legendre.leggauss(self.NM)  # 8-point Gauss-Legendre quadrature
         # We will transform according to the height H over the solar limb
-        mu_crit = (1.0 - (const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0))**0.5
+        if (diffuse):
+            mu_crit = 0.0  # For diffuse radiation, we integrate over all angles
+        else:
+            mu_crit = (1.0 - (const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0))**0.5
         if (verbose):
-            print ("info::slab::calculate_J_scat: mu_crit = ", mu_crit)
+            print ("info::slab::calculate_profiles_and_weights: mu_crit = ", mu_crit)
         
         # Now shift the weights and mu_values to pertain to the range [mu_crit, 1.0]
         mu_values = 0.5 * (mu_values + 1.0) * (1.0 - mu_crit) + mu_crit
@@ -124,7 +128,7 @@ class Slab:
         # So, start by creating those:
         NL = 41
         NM = 8
-        self.calculate_profiles_and_weights(NM, NL, verbose=False)
+        self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=False)
 
         # Now we can compute the J_inc
         J_inc = np.zeros(self.ND)
@@ -165,7 +169,7 @@ class Slab:
         # Just for the exercise, let's calculate new mu grid and weights here:
         NL = 41
         NM = 3
-        self.calculate_profiles_and_weights(NM, NL, verbose=False)
+        self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
           
         # Here we will implement ALO method to compute the source function S
         # But first we need to calculate the full lambda operator 
@@ -185,7 +189,7 @@ class Slab:
         # Initialize weights for angle and frequency integration, same as in the function above
         NL = 41
         NM = 3
-        self.calculate_profiles_and_weights(NM, NL, verbose=False)
+        self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
           
         for iteration in range(max_iter):
             
@@ -209,6 +213,7 @@ class Slab:
                     J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
                     L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
             # Update source function taking into account J_scat  
+            print(J)
             dS = (self.epsilon * self.B + (1. - self.epsilon) * J + self.J_scat - self.S) / (1. - (1. - self.epsilon) * L)
             self.S += dS
             # Check for convergence
@@ -218,34 +223,67 @@ class Slab:
         else:
             print("info::formal_solution::source function did not converge within the maximum number of iterations.")
 
-    def formal_solution_given_direction(self, mu_obs, x_obs, boundary_condition):
+    def formal_solution_given_direction(self, mu_obs, x_obs, boundary_condition, recalc_profile=False):
         # This function computes the emergent intensity at the surface of the slab
         # for a given observing angle mu_obs and observed frequency x_obs
         # for a given boundary condition (e.g., incident intensity at the bottom of the slab)
-        self.S = self.S  # Ensure S is up to date
+
+        if (recalc_profile):
+            self.voigt_profile(x_obs, self.a)
+
+        spectrum = np.zeros(len(x_obs))
+        
+        for l in range(len(x_obs)):
+            # For each frequency point, compute the emergent intensity
+            tau_lambda = self.tau * (self.phi[l] + self.r)
+            I_emergent = sc_2nd_order(tau_lambda, self.S, mu_obs, boundary_condition)
+     
+            #print('!!!!!!!!', I_emergent[0].shape)
+            spectrum[l] = I_emergent[0,0]  # Store the emergent intensity only, we don't need the lambda operator here
+        
+        return spectrum  # Return the emergent intensity spectrum only, we don't need the lambda operator here
+        
 # if main
 if __name__ == "__main__":
     # Here we will define stuff and write proto-code to understand what is going on.
 
     # Define the input parameters
-    ND = 101
-    tau_max = 1.0
-    epsilon = np.ones(ND) * 1e-6
+    ND = 41
+    tau_max = 10000.0
+    epsilon = np.ones(ND) * 1e-2
     B = np.ones(ND) * 1.0
 
     # Test the tau calculation
-    slab = Slab(ND, tau_max, epsilon, B, H=80e6) # Height of 80 Mm
+    slab = Slab(ND, tau_max, epsilon, B, H=10e6) # Note height in m
     
     
     # Next, calculate the J_scattered in the slab
-    slab.calculate_J_scat()
+    #slab.calculate_J_scat()
     #print ("info::main: J_scat = ", slab.J_scat)
 
     # Now, solve for the source function S
-    slab.solve_source_function()
+    #slab.solve_source_function()
+    slab.solve_source_function_ALO()
     S_direct = slab.S
     print ("info::main: Source function S = ", S_direct)
 
+    # Now let's go for a single formal solution for given x, mu, and the boundary:
+
+    x_obs = np.linspace(-10, 10, 501)  # Frequency grid
+    slab.a = 0.00  # Set damping parameter
+    spectrum = slab.formal_solution_given_direction(mu_obs=1.0, x_obs=x_obs, boundary_condition=0.0, recalc_profile=True)
+
+    # plot the emergent spectrum
+    plt.figure(figsize=(8,6))
+    plt.plot(x_obs, spectrum, linewidth = 2, label="Emergent Spectrum")
+    plt.xlabel("Frequency Offset (Doppler units)")
+    plt.ylabel("Emergent Intensity")
+    plt.title("Emergent Spectrum from Illuminated Finite Slab")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"emergent_spectrum_{ND}_{tau_max}.png",bbox_inches='tight')
+    
+    '''
     slab.solve_source_function_ALO()
     S_alo = slab.S
     print ("info::main: Source function S (ALO) = ", S_alo)
@@ -267,3 +305,4 @@ if __name__ == "__main__":
     # Now, solve for the emergent intensity given the boundary condition:
     #mu_obs = 1.0  # Observing angle cosine
     #slab.formal_solution(x, mu_obs) # Keep in mind that this function can be written in a way so it can be also used in the ALO method
+    '''
