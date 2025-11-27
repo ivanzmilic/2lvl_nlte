@@ -38,7 +38,7 @@ class Slab:
         self.tau = np.linspace(0, tau_max, ND) # This is too simple, but we will have a number of methods to calculate this
         self.S = np.zeros(ND)  # Source function initialization
         self.J_scat = np.zeros(ND)  # Scattered mean intensity initialization
-        self.r = 0 # line and continuum opacity ratio, eventually this shall probably be a parameter
+        self.r = 0.0 # line and continuum opacity ratio, eventually this shall probably be a parameter
         self.a = 0.0  # Voigt profile damping parameter
         
 
@@ -80,6 +80,15 @@ class Slab:
         self.phi = np.real(wofz(z)) / np.sqrt(np.pi)
         # Ensure strict normalization on provided x grid
         self.phi /= np.trapz(self.phi, x)
+
+        ''' Alternative fixed profile for testing
+        a, gamma = 1.0, 0.11
+        a # Gaussian component HWHM
+        gamma # Lorentzian component HWHM
+        sigma = a / np.sqrt(2 * np.log(2))
+        self.phi = np.real(wofz((x + 1j * gamma) / sigma / np.sqrt(2)))/sigma/np.sqrt(2 * np.pi)
+        self.phi /= np.trapz(self.phi, x)
+        '''
 
 
     def calculate_profiles_and_weights(self, NMin, NLin, verbose=False, diffuse=True):
@@ -140,7 +149,7 @@ class Slab:
                     x = self.x_values[n]
                     w_x = self.x_weights[n]
                     # Fetch the appropriate incident intensity
-                    I_inc = self.get_boundary_radiation(mu, x)  # Simple Gaussian profile
+                    I_inc = self.get_boundary_radiation(mu)  # Simple Gaussian profile
                     # Attenuation by optical depth
                     tau_eff = (self.tau_max - self.tau[i]) / mu * self.phi[n]
                     I_attenuated = I_inc * np.exp(-tau_eff)
@@ -149,7 +158,7 @@ class Slab:
         self.J_scat = J_inc
         del(J_inc)
 
-    def get_boundary_radiation(self, mu, x):
+    def get_boundary_radiation(self, mu):
         # Here we are going to write a function that relates the mu in the slab referent frame to the outgoing 
         # limb darkening emerging from the solar surface. For the moment we will assume it is wavelength independent.     
         factor = 1.0 - ((1.0 - mu**2.0) * const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0)
@@ -160,8 +169,8 @@ class Slab:
             # Simple linear limb darkening law
             # For more accuarate modeling we can use Claret coefficients for V filter (https://ui.adsabs.harvard.edu/abs/2000A&A...363.1081C/abstract)
             # Plot how this below looks like to make sure it goes from 1.0 at mu=1.0 to ~0.4 at mu=0.0 (or so)
-            # I_0 = 1 - 0.5311 * (1 - mu_0**0.5) + 0.0545 * (1 - mu_0) - 0.7301 * (1 - mu_0**1.5) + 0.4053 * (1 - mu_0**2)
-            I_0 = 0.4 + 0.6 * mu_0
+            I_0 = 1 - 0.5311 * (1 - mu_0**0.5) + 0.0545 * (1 - mu_0) - 0.7301 * (1 - mu_0**1.5) + 0.4053 * (1 - mu_0**2)
+            #I_0 = 0.4 + 0.6 * mu_0
             return I_0
         
     def solve_source_function(self, max_iter=1000, tol=1e-6, verbose=False):
@@ -200,8 +209,7 @@ class Slab:
                     mu = self.mu_values[m]
                     w_mu = self.mu_weights[m]
                     tau_lambda = self.tau * (self.phi[l] + self.r)
-                    #print(tau_lambda.shape, self.S.shape, mu)
-                    
+                    print("info::formal_solution tau, l and phi: ", tau_lambda, l, self.phi[l])
 
                     # Outward intensity
                     I_lambda  = sc_2nd_order(tau_lambda, self.S, mu, 0.0)
@@ -306,3 +314,16 @@ if __name__ == "__main__":
     #mu_obs = 1.0  # Observing angle cosine
     #slab.formal_solution(x, mu_obs) # Keep in mind that this function can be written in a way so it can be also used in the ALO method
     '''
+    mu = np.linspace(0.0, 1.0, 100)
+    I_limb = np.zeros_like(mu)
+    for m in range(len(mu)):
+        I_limb[m] = slab.get_boundary_radiation(mu[m])
+    plt.figure(figsize=(8,6))
+    plt.plot(mu, I_limb, linewidth = 2)
+    plt.xlabel("mu")
+    plt.ylabel("I(mu)")
+    plt.title("Limb Darkening Function")
+    plt.tight_layout()
+    plt.show()
+    #plt.savefig(f"limb_darkening_function_{ND}_{tau_max}.png",bbox
+    #print(I_limb)
