@@ -40,8 +40,12 @@ class Slab:
         self.J_scat = np.zeros(ND)  # Scattered mean intensity initialization
         self.r = 0.0 # line and continuum opacity ratio, eventually this shall probably be a parameter
         self.a = 0.0  # Voigt profile damping parameter
-        
 
+        # Few more parameters to quantify the radiation field inside the slab
+        self.J_diff = np.zeros(ND) # Diffuse mean intensity
+        self.L = np.zeros(ND)  # Lambda operator diagonal
+        self.J_diff_lambda = 0.0 # Diffuse mean intensity per wavelength point. This a 2D array eventually
+        
         # toy model absorption profile
         #self.phi = np.exp(-((np.linspace(-5, 5, 101))**2))  # Simple Gaussian profile
         #self.phi /= np.trapz(self.phi, np.linspace(-5, 5, 101))  # Normalize
@@ -97,11 +101,11 @@ class Slab:
         self.NL = NLin
         x_values = np.linspace(-4, 4, self.NL)  # Frequency grid
         self.voigt_profile(x_values, 0.0) # NL is usually 2 * range + 1
-        x_weights = np.ones_like(x_values) / len(x_values)  # Uniform weights for simplicity
+        x_weights = np.ones_like(x_values) * (x_values[-1]-x_values[0]) / len(x_values)  # Uniform weights for simplicity
         print (self.phi)
         print (x_weights)
         # Normalize the weights so the integral of the profile is 1
-        norm = np.trapz(self.phi, x_values)
+        norm = np.sum(self.phi * x_weights)
         if (verbose):
             print ("info::slab::calculate_profiles_and_weights: profile normalization before = ", norm)
         x_weights /= norm
@@ -193,7 +197,7 @@ class Slab:
         self.S = np.linalg.solve(A, b)
 
 
-    def solve_source_function_ALO(self, max_iter = 1000, tol = 1e-6):
+    def solve_source_function_ALO(self, max_iter = 1000, tol = 1e-6, verbose=False, silent=False):
         
         # Here we want to implement an interative approach to compute the source function S
         # using the ALI/ALO approach
@@ -206,11 +210,14 @@ class Slab:
         self.calculate_profiles_and_weights(NM, NL, verbose=True, diffuse=True)
         #print("info::formal_solution::phi shape: ", self.phi.shape)
         #print("info::formal_solution::phi: ", self.phi)
+
+        
           
         for iteration in range(max_iter):
-            
-            J = np.zeros(self.ND)
-            L = np.zeros(self.ND)
+  
+            self.J = np.zeros(self.ND)
+            self.L = np.zeros(self.ND)
+            self.J_diff_lambda = np.zeros((self.ND, self.NL))
             for m in range(0, self.NM):
                 for l in range(0, self.NL):
                     mu = self.mu_values[m]
@@ -220,31 +227,34 @@ class Slab:
 
                     # Outward intensity
                     I_lambda  = sc_2nd_order(tau_lambda, self.S, mu, 0.0)
-                    J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
-                    L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
-                    if(l==NL//2):
-                        print("info::formal_solution::I_lambda outward at l=", l)
-                        print (I_lambda[0])
+                    self.J_diff_lambda[:,l] += I_lambda[0] * w_mu * 0.5
+                    
+                    self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
 
                     # Inward intensity
                     I_lambda  = sc_2nd_order(tau_lambda, self.S, -mu, 0.0)
-                    if(l==NL//2):
-                        print("info::formal_solution::I_lambda inward at l=", l)
-                        print (I_lambda[0])
-                    J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
-                    L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
-                    
+                    self.J_diff_lambda[:,l] += I_lambda[0] * w_mu * 0.5 
+                    self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+        
+            # Sum up J over frequency
+            self.J = np.sum(self.J_diff_lambda*self.phi[None,:]*self.x_weights[None,:], axis=1)
+            
             # Update source function taking into account J_scat  
-            print("info::formal_solution::J:", J)
-            dS = (self.epsilon * self.B + (1. - self.epsilon) * J + self.J_scat - self.S) / (1. - (1. - self.epsilon) * L)
+            if (verbose):
+                print("info::formal_solution::J:", self.J)
+                print("info::formal_solution::L:", self.L)
+            dS = (self.epsilon * self.B + (1. - self.epsilon) * self.J + self.J_scat - self.S) / (1. - (1. - self.epsilon) * self.L)
             self.S += dS
             # Check for convergence
             if np.max(np.abs(dS/self.S)) < tol:
-                print(f"Converged after {iteration} iterations.")
+                if (not silent):
+                    print(f"Converged after {iteration} iterations.")
                 break
         else:
-            print("info::formal_solution::source function did not converge within the maximum number of iterations.")
-
+            if (not silent):
+                print("info::formal_solution::source function did not converge within the maximum number of iterations.")
+    
+    
     def formal_solution_given_direction(self, mu_obs, x_obs, boundary_condition, recalc_profile=False):
         # This function computes the emergent intensity at the surface of the slab
         # for a given observing angle mu_obs and observed frequency x_obs
@@ -270,9 +280,9 @@ if __name__ == "__main__":
     # Here we will define stuff and write proto-code to understand what is going on.
 
     # Define the input parameters
-    ND = 71
-    tau_max = 10000.0
-    epsilon = np.ones(ND) * 1e-2
+    ND = 101
+    tau_max = 100000.0
+    epsilon = np.ones(ND) * 1e-4
     B = np.ones(ND) * 1.0
 
     # Test the tau calculation
@@ -285,7 +295,7 @@ if __name__ == "__main__":
 
     # Now, solve for the source function S
     #slab.solve_source_function()
-    slab.solve_source_function_ALO(max_iter=1)
+    slab.solve_source_function_ALO(max_iter=100, tol=1e-4)
     S_direct = slab.S
     print ("info::main: Source function S = ", S_direct)
 
