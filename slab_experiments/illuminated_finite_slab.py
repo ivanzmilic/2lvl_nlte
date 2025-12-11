@@ -74,14 +74,20 @@ class Slab:
         # Put these two together
         self.tau = np.concatenate((tau_first_half, tau_second_half[1:]))
 
-    def voigt_profile(self, x, a):
+    def make_profile(self, x, a, type='voigt'):
         
         # Normalized Voigt profile (unit integral over x).
         # Uses scipy.special.wofz: V(x,a) = Re[w(x + i a)] / sqrt(pi).
         # Here, x is the wavelength/frequency offset in Doppler units,
         # and a is the damping parameter; x will be replaced with observed wavelength grid later.
-        z = x + 1j * a
-        self.phi = np.real(wofz(z)) / np.sqrt(np.pi)
+        if type == 'voigt':
+            z = x + 1j * a
+            self.phi = np.real(wofz(z)) / np.sqrt(np.pi)
+        elif type == 'gaussian':
+            self.phi = np.exp(-x**2) / np.sqrt(np.pi)
+        else:   
+            raise ValueError("Unsupported profile type. Use 'voigt'.")
+        
         # Ensure strict normalization on provided x grid
         #self.phi /= np.trapz(self.phi, x)
 
@@ -100,7 +106,7 @@ class Slab:
         # We will need these for two systems of reference
         self.NL = NLin
         x_values = np.linspace(-4, 4, self.NL)  # Frequency grid
-        self.voigt_profile(x_values, 0.0) # NL is usually 2 * range + 1
+        self.make_profile(x_values, 0.0, type="voigt") # NL is usually 2 * range + 1
         x_weights = np.ones_like(x_values) * (x_values[-1]-x_values[0]) / len(x_values)  # Uniform weights for simplicity
         print (self.phi)
         print (x_weights)
@@ -261,7 +267,7 @@ class Slab:
         # for a given boundary condition (e.g., incident intensity at the bottom of the slab)
 
         if (recalc_profile):
-            self.voigt_profile(x_obs, self.a)
+            self.make_profile(x_obs, self.a, type="voigt")  # Recalculate profile for the observed frequency grid
 
         spectrum = np.zeros(len(x_obs))
         
@@ -290,17 +296,17 @@ if __name__ == "__main__":
     
     
     # Next, calculate the J_scattered in the slab
-    #slab.calculate_J_scat()
-    #print ("info::main: J_scat = ", slab.J_scat)
+    slab.calculate_J_scat()
+    print ("info::main: J_scat = ", slab.J_scat)
 
     # Now, solve for the source function S
     #slab.solve_source_function()
     slab.solve_source_function_ALO(max_iter=100, tol=1e-4)
-    S_direct = slab.S
-    print ("info::main: Source function S = ", S_direct)
+    S_alo = slab.S
+    print ("info::main: Source function S = ", S_alo)
 
     # Now let's go for a single formal solution for given x, mu, and the boundary:
-    '''
+    
     x_obs = np.linspace(-10, 10, 501)  # Frequency grid
     slab.a = 0.00  # Set damping parameter
     spectrum = slab.formal_solution_given_direction(mu_obs=1.0, x_obs=x_obs, boundary_condition=0.0, recalc_profile=True)
@@ -317,14 +323,14 @@ if __name__ == "__main__":
     
 
     slab.solve_source_function_ALO()
-    S_alo = slab.S
-    print ("info::main: Source function S (ALO) = ", S_alo)
-
+    S_direct = slab.S
+    print ("info::main: Source function S (ALO) = ", S_direct)
+    
     # Plot the source function vs tau, and J_scat vs tau
     plt.figure(figsize=(8,6))
-    plt.plot(np.log10(slab.tau),S_direct, linestyle = "-", linewidth = 3, color = "orange", label="S, directly solved")
+    plt.plot(np.log10(slab.tau),S_alo, linestyle = "-", linewidth = 3, color = "orange", label="S, directly solved")
     plt.plot(np.log10(slab.tau),slab.J_scat, label="J_scat")
-    plt.plot(np.log10(slab.tau),S_alo, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
+    plt.plot(np.log10(slab.tau),S_direct, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
     plt.xlabel("log10(Tau)")
     plt.ylabel("Source Function / J_scat")
     plt.title("Source Function and J_scat vs Optical Depth")
@@ -338,7 +344,6 @@ if __name__ == "__main__":
     # Now, solve for the emergent intensity given the boundary condition:
     #mu_obs = 1.0  # Observing angle cosine
     #slab.formal_solution(x, mu_obs) # Keep in mind that this function can be written in a way so it can be also used in the ALO method
-    '''
     '''
     mu = np.linspace(0.0, 1.0, 100)
     I_limb = np.zeros_like(mu)
@@ -354,3 +359,10 @@ if __name__ == "__main__":
     #plt.savefig(f"limb_darkening_function_{ND}_{tau_max}.png",bbox
     #print(I_limb)
     '''
+    # Plot the difference between the two source functions calculated with different methods
+    plt.figure(figsize=(8,6))
+    plt.plot(S_direct - S_alo)
+    plt.xlabel("Depth Point Index")
+    plt.ylabel("Difference in Source Function")
+    plt.title("Difference between Direct and ALO Source Functions") 
+    plt.show()
