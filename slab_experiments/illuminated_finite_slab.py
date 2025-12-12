@@ -40,8 +40,12 @@ class Slab:
         self.J_scat = np.zeros(ND)  # Scattered mean intensity initialization
         self.r = 0.0 # line and continuum opacity ratio, eventually this shall probably be a parameter
         self.a = 0.0  # Voigt profile damping parameter
-        
 
+        # Few more parameters to quantify the radiation field inside the slab
+        self.J_diff = np.zeros(ND) # Diffuse mean intensity
+        self.L = np.zeros(ND)  # Lambda operator diagonal
+        self.J_diff_lambda = 0.0 # Diffuse mean intensity per wavelength point. This a 2D array eventually
+        
         # toy model absorption profile
         #self.phi = np.exp(-((np.linspace(-5, 5, 101))**2))  # Simple Gaussian profile
         #self.phi /= np.trapz(self.phi, np.linspace(-5, 5, 101))  # Normalize
@@ -70,16 +74,22 @@ class Slab:
         # Put these two together
         self.tau = np.concatenate((tau_first_half, tau_second_half[1:]))
 
-    def voigt_profile(self, x, a):
+    def make_profile(self, x, a, type='voigt'):
         
         # Normalized Voigt profile (unit integral over x).
         # Uses scipy.special.wofz: V(x,a) = Re[w(x + i a)] / sqrt(pi).
         # Here, x is the wavelength/frequency offset in Doppler units,
         # and a is the damping parameter; x will be replaced with observed wavelength grid later.
-        z = x + 1j * a
-        self.phi = np.real(wofz(z)) / np.sqrt(np.pi)
+        if type == 'voigt':
+            z = x + 1j * a
+            self.phi = np.real(wofz(z)) / np.sqrt(np.pi)
+        elif type == 'gaussian':
+            self.phi = np.exp(-x**2) / np.sqrt(np.pi)
+        else:   
+            raise ValueError("Unsupported profile type. Use 'voigt'.")
+        
         # Ensure strict normalization on provided x grid
-        self.phi /= np.trapz(self.phi, x)
+        #self.phi /= np.trapz(self.phi, x)
 
         ''' Alternative fixed profile for testing
         a, gamma = 1.0, 0.11
@@ -95,11 +105,13 @@ class Slab:
         # This function will calculate the quadrature weights for angle and frequency
         # We will need these for two systems of reference
         self.NL = NLin
-        x_values = np.linspace(-10, 10, self.NL)  # Frequency grid
-        self.voigt_profile(x_values, 0.0) # NL is usually 2 * range + 1
-        x_weights = np.ones_like(x_values) / len(x_values)  # Uniform weights for simplicity
+        x_values = np.linspace(-4, 4, self.NL)  # Frequency grid
+        self.make_profile(x_values, 0.0, type="voigt") # NL is usually 2 * range + 1
+        x_weights = np.ones_like(x_values) * (x_values[-1]-x_values[0]) / len(x_values)  # Uniform weights for simplicity
+        print (self.phi)
+        print (x_weights)
         # Normalize the weights so the integral of the profile is 1
-        norm = np.trapz(self.phi, x_values)
+        norm = np.sum(self.phi * x_weights)
         if (verbose):
             print ("info::slab::calculate_profiles_and_weights: profile normalization before = ", norm)
         x_weights /= norm
@@ -125,7 +137,10 @@ class Slab:
             print ("info::slab::mu_weights = ", mu_weights)
             print ("info::slab::x_values = ", x_values)
             print ("info::slab::x_weights = ", x_weights)
+            print ("info::slab::mu_norm:", np.sum(mu_weights))
 
+        
+        mu_weights /= np.sum(mu_weights)  # Normalize weights
         self.mu_values = mu_values
         self.mu_weights = mu_weights
         self.x_values = x_values
@@ -153,7 +168,7 @@ class Slab:
                     # Attenuation by optical depth
                     tau_eff = (self.tau_max - self.tau[i]) / mu * self.phi[n]
                     I_attenuated = I_inc * np.exp(-tau_eff)
-                    J_inc[i] += I_attenuated * w_mu * w_x / 2.0  # Divide by 2 for J    
+                    J_inc[i] += I_attenuated * self.phi[n] * w_mu * w_x / 2.0  # Divide by 2 for J    
 
         self.J_scat = J_inc
         del(J_inc)
@@ -188,7 +203,7 @@ class Slab:
         self.S = np.linalg.solve(A, b)
 
 
-    def solve_source_function_ALO(self, max_iter = 1000, tol = 1e-6):
+    def solve_source_function_ALO(self, max_iter = 1000, tol = 1e-6, verbose=False, silent=False):
         
         # Here we want to implement an interative approach to compute the source function S
         # using the ALI/ALO approach
@@ -196,48 +211,63 @@ class Slab:
         self.S = self.B.copy()
 
         # Initialize weights for angle and frequency integration, same as in the function above
-        NL = 41
-        NM = 3
-        self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
+        NL = 17
+        NM = 1
+        self.calculate_profiles_and_weights(NM, NL, verbose=True, diffuse=True)
+        #print("info::formal_solution::phi shape: ", self.phi.shape)
+        #print("info::formal_solution::phi: ", self.phi)
+
+        
           
         for iteration in range(max_iter):
-            
-            J = np.zeros(self.ND)
-            L = np.zeros(self.ND)
+  
+            self.J = np.zeros(self.ND)
+            self.L = np.zeros(self.ND)
+            self.J_diff_lambda = np.zeros((self.ND, self.NL))
             for m in range(0, self.NM):
                 for l in range(0, self.NL):
                     mu = self.mu_values[m]
                     w_mu = self.mu_weights[m]
                     tau_lambda = self.tau * (self.phi[l] + self.r)
-                    print("info::formal_solution tau, l and phi: ", tau_lambda, l, self.phi[l])
+                    #print("info::formal_solution tau, l and phi: ", tau_lambda, l, self.phi[l])
 
                     # Outward intensity
                     I_lambda  = sc_2nd_order(tau_lambda, self.S, mu, 0.0)
-                    J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
-                    L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+                    self.J_diff_lambda[:,l] += I_lambda[0] * w_mu * 0.5
+                    
+                    self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
 
                     # Inward intensity
                     I_lambda  = sc_2nd_order(tau_lambda, self.S, -mu, 0.0)
-                    J = J + I_lambda[0] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
-                    L = L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+                    self.J_diff_lambda[:,l] += I_lambda[0] * w_mu * 0.5 
+                    self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+        
+            # Sum up J over frequency
+            self.J = np.sum(self.J_diff_lambda*self.phi[None,:]*self.x_weights[None,:], axis=1)
+            
             # Update source function taking into account J_scat  
-            print(J)
-            dS = (self.epsilon * self.B + (1. - self.epsilon) * J + self.J_scat - self.S) / (1. - (1. - self.epsilon) * L)
+            if (verbose):
+                print("info::formal_solution::J:", self.J)
+                print("info::formal_solution::L:", self.L)
+            dS = (self.epsilon * self.B + (1. - self.epsilon) * self.J + self.J_scat - self.S) / (1. - (1. - self.epsilon) * self.L)
             self.S += dS
             # Check for convergence
             if np.max(np.abs(dS/self.S)) < tol:
-                print(f"Converged after {iteration} iterations.")
+                if (not silent):
+                    print(f"Converged after {iteration} iterations.")
                 break
         else:
-            print("info::formal_solution::source function did not converge within the maximum number of iterations.")
-
+            if (not silent):
+                print("info::formal_solution::source function did not converge within the maximum number of iterations.")
+    
+    
     def formal_solution_given_direction(self, mu_obs, x_obs, boundary_condition, recalc_profile=False):
         # This function computes the emergent intensity at the surface of the slab
         # for a given observing angle mu_obs and observed frequency x_obs
         # for a given boundary condition (e.g., incident intensity at the bottom of the slab)
 
         if (recalc_profile):
-            self.voigt_profile(x_obs, self.a)
+            self.make_profile(x_obs, self.a, type="voigt")  # Recalculate profile for the observed frequency grid
 
         spectrum = np.zeros(len(x_obs))
         
@@ -256,9 +286,9 @@ if __name__ == "__main__":
     # Here we will define stuff and write proto-code to understand what is going on.
 
     # Define the input parameters
-    ND = 41
-    tau_max = 10000.0
-    epsilon = np.ones(ND) * 1e-2
+    ND = 101
+    tau_max = 100000.0
+    epsilon = np.ones(ND) * 1e-4
     B = np.ones(ND) * 1.0
 
     # Test the tau calculation
@@ -266,17 +296,17 @@ if __name__ == "__main__":
     
     
     # Next, calculate the J_scattered in the slab
-    #slab.calculate_J_scat()
-    #print ("info::main: J_scat = ", slab.J_scat)
+    slab.calculate_J_scat()
+    print ("info::main: J_scat = ", slab.J_scat)
 
     # Now, solve for the source function S
     #slab.solve_source_function()
-    slab.solve_source_function_ALO()
-    S_direct = slab.S
-    print ("info::main: Source function S = ", S_direct)
+    slab.solve_source_function_ALO(max_iter=100, tol=1e-4)
+    S_alo = slab.S
+    print ("info::main: Source function S = ", S_alo)
 
     # Now let's go for a single formal solution for given x, mu, and the boundary:
-
+    
     x_obs = np.linspace(-10, 10, 501)  # Frequency grid
     slab.a = 0.00  # Set damping parameter
     spectrum = slab.formal_solution_given_direction(mu_obs=1.0, x_obs=x_obs, boundary_condition=0.0, recalc_profile=True)
@@ -291,16 +321,16 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig(f"emergent_spectrum_{ND}_{tau_max}.png",bbox_inches='tight')
     
-    '''
-    slab.solve_source_function_ALO()
-    S_alo = slab.S
-    print ("info::main: Source function S (ALO) = ", S_alo)
 
+    slab.solve_source_function_ALO()
+    S_direct = slab.S
+    print ("info::main: Source function S (ALO) = ", S_direct)
+    
     # Plot the source function vs tau, and J_scat vs tau
     plt.figure(figsize=(8,6))
-    plt.plot(np.log10(slab.tau),S_direct, linestyle = "-", linewidth = 3, color = "orange", label="S, directly solved")
+    plt.plot(np.log10(slab.tau),S_alo, linestyle = "-", linewidth = 3, color = "orange", label="S, directly solved")
     plt.plot(np.log10(slab.tau),slab.J_scat, label="J_scat")
-    plt.plot(np.log10(slab.tau),S_alo, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
+    plt.plot(np.log10(slab.tau),S_direct, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
     plt.xlabel("log10(Tau)")
     plt.ylabel("Source Function / J_scat")
     plt.title("Source Function and J_scat vs Optical Depth")
@@ -309,6 +339,7 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig(f"source_function_jscat_{ND}_{tau_max}.png",bbox_inches='tight')
     #plt.show()
+    
 
     # Now, solve for the emergent intensity given the boundary condition:
     #mu_obs = 1.0  # Observing angle cosine
@@ -327,3 +358,11 @@ if __name__ == "__main__":
     plt.show()
     #plt.savefig(f"limb_darkening_function_{ND}_{tau_max}.png",bbox
     #print(I_limb)
+    '''
+    # Plot the difference between the two source functions calculated with different methods
+    plt.figure(figsize=(8,6))
+    plt.plot(S_direct - S_alo)
+    plt.xlabel("Depth Point Index")
+    plt.ylabel("Difference in Source Function")
+    plt.title("Difference between Direct and ALO Source Functions") 
+    plt.show()
