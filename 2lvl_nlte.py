@@ -4,9 +4,7 @@ import astropy.io.fits as fits
 from numba import jit
 import sys
 
-font = {'family' : 'normal',                                   
-        'weight' : 'normal',             
-        'size'   : 18} 
+font = {'size'   : 15} 
 
 import matplotlib
 matplotlib.rc('font', **font)  
@@ -166,6 +164,7 @@ eps = np.zeros(ND)
 eps[:] = 1E-4
 
 # The ratio between line and continuum opacity
+# Confusing as there is actually no continuum here, but this is just for scaling!
 line_ratio = 1E3
 
 # Wavelength grid, in Doppler width units.
@@ -233,6 +232,8 @@ for iter in range(0,200):
     if (max_change<1E-4):
         break
 
+print(S)
+
 # Calculate the full lambda operator 
 LL = calc_lambda_full(tau*line_ratio,mu,wmu,profile,wx)
 
@@ -265,30 +266,34 @@ plt.cla()
 plt.subplot(121)
 plt.pcolormesh(x_detailed,np.log10(tau),rf/spectra)
 plt.xlabel("Reduced wavelength")
-plt.ylabel("$\\mathcal{R}(\\tau,\lambda)/I_\lambda$")
+plt.ylabel("$\\mathcal{R}(\\tau,\\lambda)/I_\\lambda$")
 plt.title("Response function")
 plt.subplot(122)
 plt.pcolormesh(x_detailed,np.log10(tau),CF/spectra)
 plt.xlabel("Reduced wavelength")
-plt.ylabel("$\\mathcal{C}(\\tau,\lambda)/I_\lambda$")
+plt.ylabel("$\\mathcal{C}(\\tau,\\lambda)/I_\\lambda$")
 plt.title("Contribution function")
 plt.tight_layout()
-plt.savefig("2LVL_NLTE_RF_vs_CF.png",fmt='png',bbox_inches='tight')
+plt.savefig("2LVL_NLTE_RF_vs_CF.png",bbox_inches='tight')
 
 #plot more results 
 plt.clf()
 plt.cla()
+plt.figure(figsize=[14,5])
 plt.subplot(121)
-plt.plot(np.log10(tau),np.log10(S),label='Source function')
-plt.plot(np.log10(tau),np.log10(B),label='Planck function')
+plt.semilogy(np.log10(tau*line_ratio),S,label='Source function')
+plt.plot(np.log10(tau*line_ratio),B,label='Planck function')
 plt.legend()
-plt.xlabel("$\\log\\tau_c$")
+plt.xlabel("$\\log\\tau_{\\mathrm {line}}$")
+plt.ylabel("$\\log S$")
 plt.subplot(122)
 plt.plot(x_detailed,spectra)
 plt.xlabel("Reduced wavelength")
 plt.ylabel("Intensity")
 plt.tight_layout()
-plt.savefig("2LVL_NLTE.png",fmt='png',bbox_inches='tight')
+plt.savefig("2LVL_NLTE.png",bbox_inches='tight')
+
+
 
 
 
