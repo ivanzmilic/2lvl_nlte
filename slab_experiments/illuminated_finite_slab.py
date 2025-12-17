@@ -24,6 +24,14 @@ from rtfunctions import one_full_fs, sc_2nd_order, calc_lambda_full, calc_lambda
 # 4. Once we have the source function, we can compute the emergent intensity at the surface
 #    of the slab, and plot it vs wavelength.
 
+# 5. After that we can play with different parameters, e.g. slab thickness, epsilon, B,
+#    incident radiation field, and see how the emergent intensity changes. 
+# 6. The endgoal is to understand how the illumination affects the line formation in the slab,
+#    what impact it has on the source function. For that to be more realistic, we can make a
+#    wrapper that will use all of this to fit our line to He I 1083 nm observations (Leennarts et al. 2025).
+# 7. The idea is to have tau_max, epsilon, B and as free parameters to fit the observations for 
+#    different heights above the limb and a given wavelength grid.
+
 # Start by defining the slab class
 class Slab:
     def __init__(self, ND, tau_max, epsilon, B, H): # Still some stuff to add to the input, e.g. a = ... ,r =... and so on, think about this. 
@@ -290,8 +298,8 @@ if __name__ == "__main__":
     # Define the input parameters
     ND = 101
     tau_max = 1E2
-    epsilon = np.ones(ND) * 5e-3
-    B = np.ones(ND) * 5.0
+    epsilon = np.ones(ND) * 1e-4
+    B = np.ones(ND) * 1.0
 
     # Test the tau calculation
     slab = Slab(ND, tau_max, epsilon, B, H=10e6) # Note height in m
@@ -310,7 +318,7 @@ if __name__ == "__main__":
     # Now let's go for a single formal solution for given x, mu, and the boundary:
     
     x_obs = np.linspace(-10, 10, 501)  # Frequency grid
-    slab.a = 0.1  # Set damping parameter
+    slab.a = 0.2  # Set damping parameter
     spectrum = slab.formal_solution_given_direction(mu_obs=1.0, x_obs=x_obs, boundary_condition=1.0, recalc_profile=True)
 
     # plot the emergent spectrum
@@ -325,32 +333,33 @@ if __name__ == "__main__":
     plt.savefig(f"emergent_spectrum_testing.png",bbox_inches='tight')
     
 
-    #slab.solve_source_function_ALO()
-    #S_direct = slab.S
-    #print ("info::main: Source function S (ALO) = ", S_direct)
-    
-    # Plot the source function vs tau, and J_scat vs tau
-    '''
+    slab.solve_source_function()
+    S_direct = slab.S
+    print ("info::main: Source function S (ALO) = ", S_direct)
+
+    # Plot the source function (ALO, Direct) vs tau, and J_scat vs tau
+
     plt.figure(figsize=(8,6))
     plt.semilogy(np.log10(slab.tau),S_alo, linestyle = "-", linewidth = 3, color = "orange", label="S ALO")
     plt.semilogy(np.log10(slab.tau),slab.J_scat, label="J_scat")
-    plt.semilogy(np.log10(slab.tau),slab.B, linestyle = "--", color = "red", alpha = 1.0, label="Planck Function")
+    plt.semilogy(np.log10(slab.tau),S_direct, linestyle = "--", color = "green", alpha = 1.0, label="S Direct")
     #plt.plot(np.log10(slab.tau),S_direct, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
     plt.xlabel("log10(Tau)")
     plt.ylabel("Source Function / J_scat")
-    plt.title("Source Function and J_scat vs Optical Depth")
+    plt.title("Source Function (ALO, Direct) and J_scat vs Optical Depth")
     plt.legend()
     plt.grid()
     plt.tight_layout()
-    plt.savefig(f"source_function_jscat_{ND}_{tau_max}.png",bbox_inches='tight')
+    plt.savefig(f"source_function_jscat_ND_{ND}_taum_{tau_max}_eps_{epsilon[0]}_B_{B[0]}.png",bbox_inches='tight')
     #plt.show()
-    '''
+    
 
     # Other variant where we use the depth index to plot all the variables
     plt.figure(figsize=(8,6))
     plt.semilogy(S_alo, linestyle = "-", linewidth = 3, color = "orange", label="S ALO")
     plt.semilogy(slab.J_scat, label="J_scat")
     plt.semilogy(slab.B, linestyle = "--", color = "red", alpha = 1.0, label="Planck Function")
+    plt.semilogy(S_direct, linestyle = "--", color = "green", alpha = 1.0, label="S Direct")
     #plt.plot(np.log10(slab.tau),S_direct, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
     plt.xlabel("Index")
     plt.ylabel("Source Function / J_scat")
