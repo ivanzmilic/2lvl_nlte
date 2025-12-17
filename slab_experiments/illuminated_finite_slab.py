@@ -67,7 +67,7 @@ class Slab:
         
         # Create log-spaced grid for first half
         half_ND = self.ND // 2 + 1
-        tau_first_half = np.logspace(-4, np.log10(self.tau_max / 2.0), half_ND)
+        tau_first_half = np.logspace(-3, np.log10(self.tau_max / 2.0), half_ND)
         # Create log-spaced grid for second half
         # A bit of cheating because we want to get exact total tau_max
         tau_second_half = self.tau_max + tau_first_half[0] - tau_first_half[::-1]
@@ -108,8 +108,10 @@ class Slab:
         x_values = np.linspace(-4, 4, self.NL)  # Frequency grid
         self.make_profile(x_values, 0.0, type="voigt") # NL is usually 2 * range + 1
         x_weights = np.ones_like(x_values) * (x_values[-1]-x_values[0]) / len(x_values)  # Uniform weights for simplicity
-        print (self.phi)
-        print (x_weights)
+        if (verbose):
+            print ("info::slab::calculate_profiles_and_weights: x_values = ", x_values)
+            print (self.phi)
+            print (x_weights)
         # Normalize the weights so the integral of the profile is 1
         norm = np.sum(self.phi * x_weights)
         if (verbose):
@@ -140,7 +142,7 @@ class Slab:
             print ("info::slab::mu_norm:", np.sum(mu_weights))
 
         
-        mu_weights /= np.sum(mu_weights)  # Normalize weights
+        mu_weights /= np.sum(mu_weights)/(1.0-mu_crit)  # Normalize weights
         self.mu_values = mu_values
         self.mu_weights = mu_weights
         self.x_values = x_values
@@ -213,7 +215,7 @@ class Slab:
         # Initialize weights for angle and frequency integration, same as in the function above
         NL = 17
         NM = 1
-        self.calculate_profiles_and_weights(NM, NL, verbose=True, diffuse=True)
+        self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
         #print("info::formal_solution::phi shape: ", self.phi.shape)
         #print("info::formal_solution::phi: ", self.phi)
 
@@ -287,9 +289,9 @@ if __name__ == "__main__":
 
     # Define the input parameters
     ND = 101
-    tau_max = 100000.0
-    epsilon = np.ones(ND) * 1e-4
-    B = np.ones(ND) * 1.0
+    tau_max = 1E2
+    epsilon = np.ones(ND) * 5e-3
+    B = np.ones(ND) * 5.0
 
     # Test the tau calculation
     slab = Slab(ND, tau_max, epsilon, B, H=10e6) # Note height in m
@@ -301,15 +303,15 @@ if __name__ == "__main__":
 
     # Now, solve for the source function S
     #slab.solve_source_function()
-    slab.solve_source_function_ALO(max_iter=100, tol=1e-4)
+    slab.solve_source_function_ALO(max_iter=200, tol=1e-6)
     S_alo = slab.S
     print ("info::main: Source function S = ", S_alo)
-
+    
     # Now let's go for a single formal solution for given x, mu, and the boundary:
     
     x_obs = np.linspace(-10, 10, 501)  # Frequency grid
-    slab.a = 0.00  # Set damping parameter
-    spectrum = slab.formal_solution_given_direction(mu_obs=1.0, x_obs=x_obs, boundary_condition=0.0, recalc_profile=True)
+    slab.a = 0.1  # Set damping parameter
+    spectrum = slab.formal_solution_given_direction(mu_obs=1.0, x_obs=x_obs, boundary_condition=1.0, recalc_profile=True)
 
     # plot the emergent spectrum
     plt.figure(figsize=(8,6))
@@ -319,26 +321,45 @@ if __name__ == "__main__":
     plt.title("Emergent Spectrum from Illuminated Finite Slab")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"emergent_spectrum_{ND}_{tau_max}.png",bbox_inches='tight')
+    #plt.savefig(f"emergent_spectrum_{ND}_{tau_max}.png",bbox_inches='tight')
+    plt.savefig(f"emergent_spectrum_testing.png",bbox_inches='tight')
     
 
-    slab.solve_source_function_ALO()
-    S_direct = slab.S
-    print ("info::main: Source function S (ALO) = ", S_direct)
+    #slab.solve_source_function_ALO()
+    #S_direct = slab.S
+    #print ("info::main: Source function S (ALO) = ", S_direct)
     
     # Plot the source function vs tau, and J_scat vs tau
+    '''
     plt.figure(figsize=(8,6))
-    plt.plot(np.log10(slab.tau),S_alo, linestyle = "-", linewidth = 3, color = "orange", label="S, directly solved")
-    plt.plot(np.log10(slab.tau),slab.J_scat, label="J_scat")
-    plt.plot(np.log10(slab.tau),S_direct, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
+    plt.semilogy(np.log10(slab.tau),S_alo, linestyle = "-", linewidth = 3, color = "orange", label="S ALO")
+    plt.semilogy(np.log10(slab.tau),slab.J_scat, label="J_scat")
+    plt.semilogy(np.log10(slab.tau),slab.B, linestyle = "--", color = "red", alpha = 1.0, label="Planck Function")
+    #plt.plot(np.log10(slab.tau),S_direct, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
     plt.xlabel("log10(Tau)")
     plt.ylabel("Source Function / J_scat")
     plt.title("Source Function and J_scat vs Optical Depth")
-    plt.legend(["Source Function S","J_scat","Source Function S (ALO)"])
+    plt.legend()
     plt.grid()
     plt.tight_layout()
     plt.savefig(f"source_function_jscat_{ND}_{tau_max}.png",bbox_inches='tight')
     #plt.show()
+    '''
+
+    # Other variant where we use the depth index to plot all the variables
+    plt.figure(figsize=(8,6))
+    plt.semilogy(S_alo, linestyle = "-", linewidth = 3, color = "orange", label="S ALO")
+    plt.semilogy(slab.J_scat, label="J_scat")
+    plt.semilogy(slab.B, linestyle = "--", color = "red", alpha = 1.0, label="Planck Function")
+    #plt.plot(np.log10(slab.tau),S_direct, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
+    plt.xlabel("Index")
+    plt.ylabel("Source Function / J_scat")
+    plt.title("Source Function and J_scat vs Optical Depth")
+    plt.legend()
+    plt.grid()
+    plt.tight_layout()
+    #plt.savefig(f"source_function_jscat_{ND}_{tau_max}_indices.png",bbox_inches='tight')
+    plt.savefig(f"S_optically_thick_H={slab.H}Mm.png",bbox_inches='tight')
     
 
     # Now, solve for the emergent intensity given the boundary condition:
@@ -360,9 +381,9 @@ if __name__ == "__main__":
     #print(I_limb)
     '''
     # Plot the difference between the two source functions calculated with different methods
-    plt.figure(figsize=(8,6))
-    plt.plot(S_direct - S_alo)
-    plt.xlabel("Depth Point Index")
-    plt.ylabel("Difference in Source Function")
-    plt.title("Difference between Direct and ALO Source Functions") 
-    plt.show()
+    #plt.figure(figsize=(8,6))
+    #plt.plot(S_direct - S_alo)
+    #plt.xlabel("Depth Point Index")
+    #plt.ylabel("Difference in Source Function")
+    #plt.title("Difference between Direct and ALO Source Functions") 
+    #plt.show()
