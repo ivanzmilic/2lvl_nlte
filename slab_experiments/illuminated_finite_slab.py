@@ -67,6 +67,9 @@ class Slab:
 
         self.compute_tau()  # Compute the tau grid, this function can also be used externally
 
+        self.rel_err = np.array([])  # Relative error for convergence monitoring
+        self.true_err = np.array([])  # True error for convergence monitoring
+
     def compute_tau(self):
         # As the most robust method we will use log-spaced grid on both sides.
         # First we check the total ND, and make sure it's odd
@@ -219,7 +222,9 @@ class Slab:
         # using the ALI/ALO approach
         # Initialize S as Planck function
         self.S = self.B.copy()
-
+        self.rel_err = np.zeros(max_iter)  # Reset relative error 
+        self.true_err = np.zeros(max_iter)  # Reset true error
+        SEdd = 1.0 - (1.0 - np.sqrt(self.epsilon)) * (np.exp(-np.sqrt(3.0 * self.epsilon) * self.tau)) # Eddington source function
         # Initialize weights for angle and frequency integration, same as in the function above
         NL = 17
         NM = 1
@@ -261,6 +266,10 @@ class Slab:
                 print("info::formal_solution::L:", self.L)
             dS = (self.epsilon * self.B + (1. - self.epsilon) * self.J + self.J_scat - self.S) / (1. - (1. - self.epsilon) * self.L)
             self.S += dS
+            max_change = np.max(np.abs(dS/self.S))
+            t_change = np.max(np.abs((self.S - SEdd)/SEdd))
+            self.true_err[iteration] = t_change
+            self.rel_err[iteration] = max_change
             # Check for convergence
             if np.max(np.abs(dS/self.S)) < tol:
                 if (not silent):
@@ -296,10 +305,10 @@ if __name__ == "__main__":
     # Here we will define stuff and write proto-code to understand what is going on.
 
     # Define the input parameters
-    ND = 101
-    tau_max = 1E2
-    epsilon = np.ones(ND) * 1e-4
-    B = np.ones(ND) * 1.0
+    ND = 151
+    tau_max = 1e3
+    epsilon = np.ones(ND) * 5e-3
+    B = np.ones(ND) * 5.0
 
     # Test the tau calculation
     slab = Slab(ND, tau_max, epsilon, B, H=10e6) # Note height in m
@@ -318,7 +327,7 @@ if __name__ == "__main__":
     # Now let's go for a single formal solution for given x, mu, and the boundary:
     
     x_obs = np.linspace(-10, 10, 501)  # Frequency grid
-    slab.a = 0.2  # Set damping parameter
+    slab.a = 0.1 # Set damping parameter
     spectrum = slab.formal_solution_given_direction(mu_obs=1.0, x_obs=x_obs, boundary_condition=1.0, recalc_profile=True)
 
     # plot the emergent spectrum
@@ -330,7 +339,7 @@ if __name__ == "__main__":
     plt.legend()
     plt.tight_layout()
     #plt.savefig(f"emergent_spectrum_{ND}_{tau_max}.png",bbox_inches='tight')
-    plt.savefig(f"emergent_spectrum_testing.png",bbox_inches='tight')
+    plt.savefig(f"emergent_spectrum_ND_{ND}_tau_{tau_max}_eps_{epsilon[0]}.png",bbox_inches='tight')
     
 
     slab.solve_source_function()
