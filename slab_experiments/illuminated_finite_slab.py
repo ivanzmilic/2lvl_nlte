@@ -3,7 +3,9 @@ import matplotlib.pyplot as plt
 import astropy.units as units
 import astropy.constants as const
 from scipy.special import wofz
+from tqdm import tqdm
 from rtfunctions import one_full_fs, sc_2nd_order, calc_lambda_full, calc_lambda_monoc
+import time
 
 # Some basic description, so we know what we are doing: 
 # This script solves the NLTE line formation for a 2-level atom in an illuminated finite slab.
@@ -310,6 +312,74 @@ if __name__ == "__main__":
     epsilon = np.ones(ND) * 5e-3
     B = np.ones(ND) * 5.0
 
+    # Benchmark settings
+    repeats = 10000
+
+    # Helper to compute iterations done from rel_err array
+    def iterations_done_from_relerr(rel):
+        idx = np.flatnonzero(rel)
+        return 0 if idx.size == 0 else idx[-1] + 1
+
+    # Time direct solver (recreate slab each repeat for fair timing)
+    direct_times = []
+    for i in tqdm(range(repeats)):
+        slab_d = Slab(ND, tau_max, epsilon, B, H=10e6)
+        slab_d.calculate_J_scat()
+        t0 = time.perf_counter()
+        slab_d.solve_source_function()
+        t1 = time.perf_counter()
+        direct_times.append(t1 - t0)
+    print(f"Direct solve: mean time = {np.mean(direct_times):.4f}s, std = {np.std(direct_times):.4f}s, repeats = {repeats}")
+    
+    # Time ALI solver (recreate slab each repeat)
+    alo_times = []
+    alo_iters = []
+    for i in tqdm(range(repeats), desc="Timing ALI solver"):
+        slab_a = Slab(ND, tau_max, epsilon, B, H=10e6)
+        slab_a.calculate_J_scat()
+        t0 = time.perf_counter()
+        slab_a.solve_source_function_ALO(max_iter=200, tol=1e-6, verbose=False, silent=True)
+        t1 = time.perf_counter()
+        alo_times.append(t1 - t0)
+        alo_iters.append(iterations_done_from_relerr(slab_a.rel_err))
+    print(f"ALI solve: mean time = {np.mean(alo_times):.4f}s, std = {np.std(alo_times):.4f}s, mean iters = {int(np.mean(alo_iters))}")
+
+    # One representative run (for plotting convergence / diagnostics)
+    slab = Slab(ND, tau_max, epsilon, B, H=10e6)
+    slab.calculate_J_scat()
+    slab.solve_source_function_ALO(max_iter=500, tol=1e-8, verbose=False, silent=True)
+
+    # Print some diagnostics
+    iters_done = iterations_done_from_relerr(slab.rel_err)
+    print(f"Representative ALI run: iterations = {iters_done}, last rel_err = {slab.rel_err[iters_done-1] if iters_done>0 else None}")
+    print(f"Direct S (min,max) = {np.min(slab.B):.6g}, {np.max(slab.B):.6g}   ALI S (min,max) = {np.min(slab.S):.6g}, {np.max(slab.S):.6g}")
+
+    # Plot convergence of relative error vs iteration
+    rel = slab.rel_err[:iters_done]
+    if rel.size > 0:
+        plt.figure(figsize=(6,4))
+        plt.semilogy(np.arange(1, rel.size+1), rel, marker='o')
+        plt.xlabel("ALI iteration")
+        plt.ylabel("relative change (max |dS/S|)")
+        plt.title("ALI convergence")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig("ali_convergence.png", bbox_inches='tight')
+        print("Saved ali_convergence.png")
+    else:
+        print("No ALI iterations recorded (rel_err empty).")
+
+    # Optionally: compare solution equality (direct vs ALI) from separate runs
+    slab_direct = Slab(ND, tau_max, epsilon, B, H=10e6)
+    slab_direct.calculate_J_scat()
+    slab_direct.solve_source_function()
+    slab_alo = Slab(ND, tau_max, epsilon, B, H=10e6)
+    slab_alo.calculate_J_scat()
+    slab_alo.solve_source_function_ALO(max_iter=500, tol=1e-8, verbose=False, silent=True)
+
+    diff = np.max(np.abs(slab_direct.S - slab_alo.S))
+    print(f"Max abs difference between direct and ALI S = {diff:.6e}")
+    
     # Test the tau calculation
     slab = Slab(ND, tau_max, epsilon, B, H=10e6) # Note height in m
     
