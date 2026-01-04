@@ -281,7 +281,58 @@ class Slab:
             if (not silent):
                 print("info::formal_solution::source function did not converge within the maximum number of iterations.")
     
-    
+    def solve_source_function_2component_ALO(self, max_iter = 1000, tol = 1e-6, verbose=False, silent=False):
+        self.S = self.B.copy()
+        NL = 17
+        NM = 1
+        # Two components have their own profiles
+        phi_1 = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
+        phi_2 = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
+        # We need absorption profiles for both components
+        chi_1 = 0.5
+        chi_2 = 0.5
+
+        for iteration in range(max_iter):
+            self.J = np.zeros(self.ND)
+            self.L = np.zeros(self.ND)
+            self.J_diff_lambda = np.zeros((self.ND, self.NL))
+            for m in range(0, self.NM):
+                for l in range(0, self.NL):
+                    mu = self.mu_values[m]
+                    w_mu = self.mu_weights[m]
+                    tau_lambda_all = self.tau * (phi_1[l] + 8 * phi_2[l] + self.r)
+
+                    # Outward intensity
+                    I_lambda = sc_2nd_order(tau_lambda_all, self.S, mu, 0.0)
+                    self.J_diff_lambda[:,l] += I_lambda[0] * w_mu * 0.5 * chi_1[l]/(chi_1[l] + chi_2[l])
+                    self.L = self.L + I_lambda[1] * (phi_1[l] + phi_2[l]) * self.x_weights[l] * w_mu * 0.5
+
+                    # Inward intensity
+                    I_lambda  = sc_2nd_order(tau_lambda_all, self.S, -mu, 0.0)
+                    self.J_diff_lambda[:,l] += I_lambda[0] * w_mu * 0.5 * chi_2[l]/(chi_1[l] + chi_2[l])
+                    self.L = self.L + I_lambda[1] * (phi_1[l] + phi_2[l]) * self.x_weights[l] * w_mu * 0.5
+        
+            # Sum up J over frequency
+            self.J = np.sum(self.J_diff_lambda*(phi_1[None,:]+phi_2[None,:])*self.x_weights[None,:], axis=1)
+            # self.J = np.sum(self.J_diff_lambda*(phi_1[l] + phi_2[l])*self.x_weights[None,:]*chi_1[l]*chi_2[l]/(chi_1[l] + chi_2[l]), axis=1)
+            
+            # Update source function taking into account J_scat  
+            if (verbose):
+                print("info::formal_solution::J:", self.J)
+                print("info::formal_solution::L:", self.L)
+            dS = (self.epsilon * self.B + (1. - self.epsilon) * self.J + self.J_scat - self.S) / (1. - (1. - self.epsilon) * self.L)
+            self.S += dS
+            max_change = np.max(np.abs(dS/self.S))
+            self.rel_err[iteration] = max_change
+            # Check for convergence
+            if np.max(np.abs(dS/self.S)) < tol:     
+                if (not silent):
+                    print(f"Converged after {iteration} iterations.")
+                break
+        else:
+            if (not silent):
+                print("info::formal_solution::source function did not converge within the maximum number of iterations.")      
+
     def formal_solution_given_direction(self, mu_obs, x_obs, boundary_condition, recalc_profile=False):
         # This function computes the emergent intensity at the surface of the slab
         # for a given observing angle mu_obs and observed frequency x_obs
@@ -307,7 +358,7 @@ if __name__ == "__main__":
     # Here we will define stuff and write proto-code to understand what is going on.
 
     # Define the input parameters
-    ND = 151
+    ND = 81
     tau_max = 1e3
     epsilon = np.ones(ND) * 5e-3
     B = np.ones(ND) * 5.0
