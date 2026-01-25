@@ -114,27 +114,26 @@ class Slab:
         '''
 
 
-    def calculate_profiles_and_weights(self, NMin, NLin, verbose=False, diffuse=True):
+    def calculate_profiles_and_weights(self, NMin, NLin, verbose=False, diffuse=True, a=0.0, profile_type='voigt'):
         # This function will calculate the quadrature weights for angle and frequency
         # We will need these for two systems of reference
-        self.NL = NLin
-        x_values = np.linspace(-4, 4, self.NL)  # Frequency grid
-        self.make_profile(x_values, 0.0, type="voigt") # NL is usually 2 * range + 1
+        x_values = np.linspace(-4, 4, NLin)  # Frequency grid
+        self.make_profile(x_values, a, type=profile_type) # NL is usually 2 * range + 1
+        phi = self.phi.copy()  # Copy the profile
         x_weights = np.ones_like(x_values) * (x_values[-1]-x_values[0]) / len(x_values)  # Uniform weights for simplicity
         if (verbose):
             print ("info::slab::calculate_profiles_and_weights: x_values = ", x_values)
-            print (self.phi)
+            print (phi)
             print (x_weights)
         # Normalize the weights so the integral of the profile is 1
-        norm = np.sum(self.phi * x_weights)
+        norm = np.sum(phi * x_weights)
         if (verbose):
             print ("info::slab::calculate_profiles_and_weights: profile normalization before = ", norm)
         x_weights /= norm
         
         # For mu values we use Gaussian quadrature
 
-        self.NM = NMin
-        mu_values, mu_weights = np.polynomial.legendre.leggauss(self.NM)  # 8-point Gauss-Legendre quadrature
+        mu_values, mu_weights = np.polynomial.legendre.leggauss(NMin)  # 8-point Gauss-Legendre quadrature
         # We will transform according to the height H over the solar limb
         if (diffuse):
             mu_crit = 0.0  # For diffuse radiation, we integrate over all angles
@@ -156,10 +155,8 @@ class Slab:
 
         
         mu_weights /= np.sum(mu_weights)/(1.0-mu_crit)  # Normalize weights
-        self.mu_values = mu_values
-        self.mu_weights = mu_weights
-        self.x_values = x_values
-        self.x_weights = x_weights
+        
+        return phi, x_values, x_weights, mu_values, mu_weights
         
 
     def calculate_J_scat(self):
@@ -167,7 +164,14 @@ class Slab:
         # So, start by creating those:
         NL = 41
         NM = 8
-        self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=False)
+        phi, x_values, x_weights, mu_values, mu_weights = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=False)
+        self.phi = phi
+        self.x_values = x_values
+        self.x_weights = x_weights
+        self.mu_values = mu_values
+        self.mu_weights = mu_weights
+        self.NL = NL
+        self.NM = NM
 
         # Now we can compute the J_inc
         J_inc = np.zeros(self.ND)
@@ -208,7 +212,14 @@ class Slab:
         # Just for the exercise, let's calculate new mu grid and weights here:
         NL = 41
         NM = 3
-        self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
+        phi, x_values, x_weights, mu_values, mu_weights = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
+        self.phi = phi
+        self.x_values = x_values
+        self.x_weights = x_weights
+        self.mu_values = mu_values
+        self.mu_weights = mu_weights
+        self.NL = NL
+        self.NM = NM
           
         # Here we will implement ALO method to compute the source function S
         # But first we need to calculate the full lambda operator 
@@ -230,7 +241,14 @@ class Slab:
         # Initialize weights for angle and frequency integration, same as in the function above
         NL = 17
         NM = 1
-        self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
+        phi, x_values, x_weights, mu_values, mu_weights = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
+        self.phi = phi
+        self.x_values = x_values
+        self.x_weights = x_weights
+        self.mu_values = mu_values
+        self.mu_weights = mu_weights
+        self.NL = NL
+        self.NM = NM
         #print("info::formal_solution::phi shape: ", self.phi.shape)
         #print("info::formal_solution::phi: ", self.phi)
 
@@ -286,8 +304,16 @@ class Slab:
         NL = 17
         NM = 1
         # Two components have their own profiles
-        phi_1 = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
-        phi_2 = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
+        phi_1, x_values, x_weights, mu_values, mu_weights = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
+        phi_2, _, _, _, _ = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
+        # Set self attributes
+        self.phi = phi_1  # or phi_2, since same
+        self.x_values = x_values
+        self.x_weights = x_weights
+        self.mu_values = mu_values
+        self.mu_weights = mu_weights
+        self.NL = NL
+        self.NM = NM
         # We need absorption profiles for both components
         chi_1 = 0.5
         chi_2 = 0.5
@@ -352,7 +378,69 @@ class Slab:
             spectrum[l] = I_emergent[0,0]  # Store the emergent intensity only, we don't need the lambda operator here
         
         return spectrum  # Return the emergent intensity spectrum only, we don't need the lambda operator here
+    
+    # This function is just for testing purposes
+    def solve_source_function_LI_2comp(self, max_iter=1000, tol=1e-6, verbose=False):
+        # Simple Lambda Iteration for two component absorption profile
+        k = 8.0 # Coefficient for second component
+        self.S = self.B.copy()
+        NL = 41
+        NM = 3
+        phi_1, x_values_1, x_weights_1, mu_values_1, mu_weights_1 = self.calculate_profiles_and_weights(NM, NL, a = 0.1, verbose=False, diffuse=True)
+        phi_2, x_values_2, x_weights_2, mu_values_2, mu_weights_2 = self.calculate_profiles_and_weights(NM, NL, a = 0.15, verbose=False, diffuse=True)
+        self.phi = phi_1
+        self.x_values = x_values_1
+        self.x_weights = x_weights_1
+        self.mu_values = mu_values_1
+        self.mu_weights = mu_weights_1
+        self.NL = NL
+        self.NM = NM
+        b_per_freq = (phi_1 + 1E-5) / (phi_1 + k * phi_2 + 1E-5)  # Shape: (NL,)
+        b_avg = np.sum(b_per_freq * x_weights_1) / np.sum(x_weights_1)  # Scalar: effective average weighting
+        for iteration in range(max_iter):
+            J_1 = np.zeros(self.ND)
+            J_2 = np.zeros(self.ND)
+            for m in range(0, self.NM):
+                for l in range(0, self.NL):
+                    mu = self.mu_values[m]
+                    w_mu = self.mu_weights[m]
+                    tau_lambda = self.tau * (phi_1[l] + self.r + k * phi_2[l]) 
+                    #b = phi_1[l]/(phi_1[l] + k * phi_2[l])
+                    
+                    # S = b * S_1 + (1-b) * S_2
+                    # b = phi_1 / (phi_1 + k * phi_2)
+                    # S_1 = epsilon * B + (1-epsilon) * J_1
+                    # S_2 = epsilon * B + (1-epsilon) * J_2
+                    # J_1 = /int/int I phi_1 dphi dmu
+                    # J_2 = /int/int I phi_2 dphi dmu
+
+                    # Outward intensity
+                    I_lambda = sc_2nd_order(tau_lambda, self.S, mu, 0.0)
+                    J_1 += I_lambda[0] * w_mu * 0.5 * phi_1[l] * x_weights_1[l]
+                    J_2 += I_lambda[0] * w_mu * 0.5 * phi_2[l] * x_weights_2[l]
+
+                    # Inward intensity
+                    I_lambda = sc_2nd_order(tau_lambda, self.S, -mu, 0.0)
+                    J_1 += I_lambda[0] * w_mu * 0.5 * phi_1[l] * x_weights_1[l]
+                    J_2 += I_lambda[0] * w_mu * 0.5 * phi_2[l] * x_weights_2[l]
         
+            # Update source function taking into account J_scat  
+            if (verbose):
+                print("info::formal_solution::J:", J_1)
+                print("info::formal_solution::J:", J_2)
+            dS_1 = self.epsilon * self.B + (1. - self.epsilon) * J_1 - self.S
+            dS_2 = self.epsilon * self.B + (1. - self.epsilon) * J_2 - self.S
+            #dS = (phi_1/(phi_1 + k * phi_2)) * dS_1 + (k * phi_2/(phi_1 + k * phi_2)) * dS_2 + self.J_scat
+            dS = b_avg * dS_1 + (1.0 - b_avg) * dS_2 + self.J_scat
+            max_change = np.max(np.abs((dS - self.S)/self.S))
+            self.S += dS
+            if max_change < tol:
+                if (verbose):
+                    print(f"Converged after {iteration} iterations.")
+                break
+        else:
+            if (verbose):
+                print("info::formal_solution::source function did not converge within the maximum number of iterations.")
 # if main
 if __name__ == "__main__":
     # Here we will define stuff and write proto-code to understand what is going on.
@@ -364,7 +452,7 @@ if __name__ == "__main__":
     B = np.ones(ND) * 5.0
 
     # Benchmark settings
-    repeats = 10000
+    repeats = 10
 
     # Helper to compute iterations done from rel_err array
     def iterations_done_from_relerr(rel):
