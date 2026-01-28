@@ -34,6 +34,10 @@ import time
 # 7. The idea is to have tau_max, epsilon, B and as free parameters to fit the observations for 
 #    different heights above the limb and a given wavelength grid.
 
+
+# 8. Create the class Line to handle line profile calculations, e.g. Voigt profile, Doppler width, damping parameter, etc.
+
+
 # Start by defining the slab class
 class Slab:
     def __init__(self, ND, tau_max, epsilon, B, H): # Still some stuff to add to the input, e.g. a = ... ,r =... and so on, think about this. 
@@ -71,6 +75,95 @@ class Slab:
 
         self.rel_err = np.array([])  # Relative error for convergence monitoring
         self.true_err = np.array([])  # True error for convergence monitoring
+
+    # Now, let's create an inner class to handle line profile calculations
+    class Line:
+        def __init__(self, d_lamb, a, r, k, l_0, slab_instance):
+            self.d_lamb = d_lamb  # Wavelength offset
+            self.a = a  # Damping parameter
+            self.r = r  # Line to continuum opacity ratio
+            self.k = k  # Line opacity
+            self.l_0 = l_0  # Central wavelength
+            self.slab_instance = slab_instance  # Reference to the parent slab instance
+            self.phi = None  # Profile function (will be computed later)
+            self.J_scatter = None  # Scattered mean intensity initialization
+            self.epsilon = slab_instance.epsilon  # Thermalization parameter reference
+            self.B = slab_instance.B  # Planck function reference
+            self.S = slab_instance.S  # Source function reference
+        
+            # More parameters can be added as needed
+            self.mu_values = None  
+            self.mu_weights = None
+            self.x_values = None
+            self.x_weights = None
+        
+        # Method to compute the Voigt profile
+        def compute_profile(self):
+            center = self.l_0
+            start = center - 4  
+            stop = center + 4
+            x_values = np.linspace(start, stop, self.slab_instance.NL)  # Frequency grid
+            self.x_values = x_values
+            self.slab_instance.make_profile(x_values, self.a, type='voigt')
+            self.phi = self.slab_instance.phi.copy()
+
+        def compute_quadrature_weights(self, diffuse=True, verbose=False):
+            self.compute_profile()
+            # Frequency weights (assuming uniform spacing for simplicity)
+            self.x_weights = np.ones_like(self.phi) * (self.d_lamb) / len(self.phi)
+            self.x_weights /= np.sum(self.phi * self.x_weights)  # Normalize the weights
+            if (verbose):
+                print ("info::slab::compute_quadrature_weights: x_values = ", self.x_values)
+                print (self.phi)
+                print (self.x_weights)
+
+            mu_values, mu_weights = np.polynomial.legendre.leggauss(self.slab_instance.NM)  # Gaussian quadrature   
+            if (diffuse):
+                mu_crit = 0.0  # For diffuse radiation, we integrate over all angles
+            else:
+                mu_crit = (1.0 - (const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0))**0.5
+            if (verbose):
+                print ("info::slab::calculate_profiles_and_weights: mu_crit = ", mu_crit)
+            
+            # Now shift the weights and mu_values to pertain to the range [mu_crit, 1.0]
+            mu_values = 0.5 * (mu_values + 1.0) * (1.0 - mu_crit) + mu_crit
+            mu_weights = 0.5 * mu_weights * (1.0 - mu_crit)
+
+            if (verbose):
+                print ("info::slab::mu_values = ", mu_values)
+                print ("info::slab::mu_weights = ", mu_weights)
+                print ("info::slab::x_values = ", self.x_values)
+                print ("info::slab::x_weights = ", self.x_weights)
+                print ("info::slab::mu_norm:", np.sum(mu_weights))
+
+            
+            mu_weights /= np.sum(mu_weights)/(1.0-mu_crit)  # Normalize weights
+            self.mu_values = mu_values
+            self.mu_weights = mu_weights
+
+        def line_J_scatter(self):
+            # This function will compute the J_scat for this line
+            ND = self.slab_instance.ND
+            J_inc = np.zeros(ND)
+            for i in range(ND):
+                for m in range(0, self.slab_instance.NM):
+                    mu = self.mu_values[m]
+                    w_mu = self.mu_weights[m]
+                    for n in range(0, self.slab_instance.NL):
+                        x = self.x_values[n]
+                        w_x = self.x_weights[n]
+                        # Fetch the appropriate incident intensity
+                        I_inc = self.slab_instance.get_boundary_radiation(mu)  # Simple Gaussian profile
+                        # Attenuation by optical depth
+                        tau_eff = (self.slab_instance.tau_max - self.slab_instance.tau[i]) / mu * self.phi[n]
+                        I_attenuated = I_inc * np.exp(-tau_eff)
+                        J_inc[i] += I_attenuated * self.phi[n] * w_mu * w_x / 2.0  # Divide by 2 for J    
+
+            self.J_scatter = J_inc
+            del(J_inc)
+
+        # 
+
 
     def compute_tau(self):
         # As the most robust method we will use log-spaced grid on both sides.
@@ -157,7 +250,57 @@ class Slab:
         mu_weights /= np.sum(mu_weights)/(1.0-mu_crit)  # Normalize weights
         
         return phi, x_values, x_weights, mu_values, mu_weights
+    
+    # We shall define a function to calculate x grid for 2 profiles
+    def calculate_profiles_and_weights_2comp(self, NMin, NLin, a1=0.1, a2=0.2, verbose=False, diffuse=True):
+        # This function will calculate the quadrature weights for angle and frequency
+        # We will need these for two systems of reference
+        x_values = np.linspace(-4, 4, NLin)  # Frequency grid
         
+        # First profile
+        self.make_profile(x_values, a1, type='voigt') # NL is usually 2 * range + 1
+        phi_1 = self.phi.copy()  # Copy the profile
+        
+        # Second profile
+        self.make_profile(x_values, a2, type='voigt') # NL is usually 2 * range + 1
+        phi_2 = self.phi.copy()  # Copy the profile
+        
+        x_weights = np.ones_like(x_values) * (x_values[-1]-x_values[0]) / len(x_values)  # Uniform weights for simplicity
+        
+        # Normalize the weights so the integral of the profiles is 1
+        norm_1 = np.sum(phi_1 * x_weights)
+        norm_2 = np.sum(phi_2 * x_weights)
+        if (verbose):
+            print ("info::slab::calculate_profiles_and_weights_2comp: profile 1 normalization before = ", norm_1)
+            print ("info::slab::calculate_profiles_and_weights_2comp: profile 2 normalization before = ", norm_2)
+        x_weights /= (norm_1 + norm_2)/2.0  # Average normalization
+        
+        # For mu values we use Gaussian quadrature
+
+        mu_values, mu_weights = np.polynomial.legendre.leggauss(NMin)  # 8-point Gauss-Legendre quadrature
+        # We will transform according to the height H over the solar limb
+        if (diffuse):
+            mu_crit = 0.0  # For diffuse radiation, we integrate over all angles
+        else:
+            mu_crit = (1.0 - (const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0))**0.5
+        if (verbose):
+            print ("info::slab::calculate_profiles_and_weights_2comp: mu_crit = ", mu_crit)
+        
+        # Now shift the weights and mu_values to pertain to the range [mu_crit, 1.0]
+        mu_values = 0.5 * (mu_values + 1.0) * (1.0 - mu_crit) + mu_crit
+        mu_weights = 0.5 * mu_weights * (1.0 - mu_crit)
+
+        if (verbose):
+            print ("info::slab::mu_values = ", mu_values)
+            print ("info::slab::mu_weights = ", mu_weights)
+            print ("info::slab::x_values = ", x_values)
+            print ("info::slab::x_weights = ", x_weights)
+            print ("info::slab::mu_norm:", np.sum(mu_weights))
+
+        
+        mu_weights /= np.sum(mu_weights)/(1.0-mu_crit)  # Normalize weights
+
+        return phi_1, phi_2, x_values, x_weights, mu_values, mu_weights
 
     def calculate_J_scat(self):
         # This function has it's own angle and frequency integration
@@ -298,66 +441,7 @@ class Slab:
         else:
             if (not silent):
                 print("info::formal_solution::source function did not converge within the maximum number of iterations.")
-    
-    def solve_source_function_2component_ALO(self, max_iter = 1000, tol = 1e-6, verbose=False, silent=False):
-        self.S = self.B.copy()
-        NL = 17
-        NM = 1
-        # Two components have their own profiles
-        phi_1, x_values, x_weights, mu_values, mu_weights = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
-        phi_2, _, _, _, _ = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
-        # Set self attributes
-        self.phi = phi_1  # or phi_2, since same
-        self.x_values = x_values
-        self.x_weights = x_weights
-        self.mu_values = mu_values
-        self.mu_weights = mu_weights
-        self.NL = NL
-        self.NM = NM
-        # We need absorption profiles for both components
-        chi_1 = 0.5
-        chi_2 = 0.5
-
-        for iteration in range(max_iter):
-            self.J = np.zeros(self.ND)
-            self.L = np.zeros(self.ND)
-            self.J_diff_lambda = np.zeros((self.ND, self.NL))
-            for m in range(0, self.NM):
-                for l in range(0, self.NL):
-                    mu = self.mu_values[m]
-                    w_mu = self.mu_weights[m]
-                    tau_lambda_all = self.tau * (phi_1[l] + 8 * phi_2[l] + self.r)
-
-                    # Outward intensity
-                    I_lambda = sc_2nd_order(tau_lambda_all, self.S, mu, 0.0)
-                    self.J_diff_lambda[:,l] += I_lambda[0] * w_mu * 0.5 * chi_1[l]/(chi_1[l] + chi_2[l])
-                    self.L = self.L + I_lambda[1] * (phi_1[l] + phi_2[l]) * self.x_weights[l] * w_mu * 0.5
-
-                    # Inward intensity
-                    I_lambda  = sc_2nd_order(tau_lambda_all, self.S, -mu, 0.0)
-                    self.J_diff_lambda[:,l] += I_lambda[0] * w_mu * 0.5 * chi_2[l]/(chi_1[l] + chi_2[l])
-                    self.L = self.L + I_lambda[1] * (phi_1[l] + phi_2[l]) * self.x_weights[l] * w_mu * 0.5
-        
-            # Sum up J over frequency
-            self.J = np.sum(self.J_diff_lambda*(phi_1[None,:]+phi_2[None,:])*self.x_weights[None,:], axis=1)
-            # self.J = np.sum(self.J_diff_lambda*(phi_1[l] + phi_2[l])*self.x_weights[None,:]*chi_1[l]*chi_2[l]/(chi_1[l] + chi_2[l]), axis=1)
-            
-            # Update source function taking into account J_scat  
-            if (verbose):
-                print("info::formal_solution::J:", self.J)
-                print("info::formal_solution::L:", self.L)
-            dS = (self.epsilon * self.B + (1. - self.epsilon) * self.J + self.J_scat - self.S) / (1. - (1. - self.epsilon) * self.L)
-            self.S += dS
-            max_change = np.max(np.abs(dS/self.S))
-            self.rel_err[iteration] = max_change
-            # Check for convergence
-            if np.max(np.abs(dS/self.S)) < tol:     
-                if (not silent):
-                    print(f"Converged after {iteration} iterations.")
-                break
-        else:
-            if (not silent):
-                print("info::formal_solution::source function did not converge within the maximum number of iterations.")      
+          
 
     def formal_solution_given_direction(self, mu_obs, x_obs, boundary_condition, recalc_profile=False):
         # This function computes the emergent intensity at the surface of the slab
@@ -384,19 +468,23 @@ class Slab:
         # Simple Lambda Iteration for two component absorption profile
         k = 8.0 # Coefficient for second component
         self.S = self.B.copy()
+        S_1 = self.B.copy()
+        S_2 = self.B.copy()
+        S_1_hist = []
+        S_2_hist = []
         NL = 41
         NM = 3
-        phi_1, x_values_1, x_weights_1, mu_values_1, mu_weights_1 = self.calculate_profiles_and_weights(NM, NL, a = 0.1, verbose=False, diffuse=True)
-        phi_2, x_values_2, x_weights_2, mu_values_2, mu_weights_2 = self.calculate_profiles_and_weights(NM, NL, a = 0.15, verbose=False, diffuse=True)
+        phi_1, phi_2, x_values, x_weights, mu_values, mu_weights = self.calculate_profiles_and_weights_2comp(NM, NL, a1=0.1, a2=0.2, verbose=False, diffuse=True)
         self.phi = phi_1
-        self.x_values = x_values_1
-        self.x_weights = x_weights_1
-        self.mu_values = mu_values_1
-        self.mu_weights = mu_weights_1
+        self.x_values = x_values
+        self.x_weights = x_weights
+        self.mu_values = mu_values
+        self.mu_weights = mu_weights
         self.NL = NL
         self.NM = NM
+        self.phi = phi_2
         b_per_freq = (phi_1 + 1E-5) / (phi_1 + k * phi_2 + 1E-5)  # Shape: (NL,)
-        b_avg = np.sum(b_per_freq * x_weights_1) / np.sum(x_weights_1)  # Scalar: effective average weighting
+        b_avg = np.sum(b_per_freq * x_weights) / np.sum(x_weights)  # Scalar: effective average weighting
         for iteration in range(max_iter):
             J_1 = np.zeros(self.ND)
             J_2 = np.zeros(self.ND)
@@ -416,14 +504,14 @@ class Slab:
 
                     # Outward intensity
                     I_lambda = sc_2nd_order(tau_lambda, self.S, mu, 0.0)
-                    J_1 += I_lambda[0] * w_mu * 0.5 * phi_1[l] * x_weights_1[l]
-                    J_2 += I_lambda[0] * w_mu * 0.5 * phi_2[l] * x_weights_2[l]
+                    J_1 += I_lambda[0] * w_mu * 0.5 * phi_1[l] * x_weights[l]
+                    J_2 += I_lambda[0] * w_mu * 0.5 * phi_2[l] * x_weights[l]
 
                     # Inward intensity
                     I_lambda = sc_2nd_order(tau_lambda, self.S, -mu, 0.0)
-                    J_1 += I_lambda[0] * w_mu * 0.5 * phi_1[l] * x_weights_1[l]
-                    J_2 += I_lambda[0] * w_mu * 0.5 * phi_2[l] * x_weights_2[l]
-        
+                    J_1 += I_lambda[0] * w_mu * 0.5 * phi_1[l] * x_weights[l]
+                    J_2 += I_lambda[0] * w_mu * 0.5 * phi_2[l] * x_weights[l]
+
             # Update source function taking into account J_scat  
             if (verbose):
                 print("info::formal_solution::J:", J_1)
@@ -432,6 +520,10 @@ class Slab:
             dS_2 = self.epsilon * self.B + (1. - self.epsilon) * J_2 - self.S
             #dS = (phi_1/(phi_1 + k * phi_2)) * dS_1 + (k * phi_2/(phi_1 + k * phi_2)) * dS_2 + self.J_scat
             dS = b_avg * dS_1 + (1.0 - b_avg) * dS_2 + self.J_scat
+            S_1 = S_1 + dS_1
+            S_1_hist.append(S_1)
+            S_2 = S_2 + dS_2
+            S_2_hist.append(S_2)
             max_change = np.max(np.abs((dS - self.S)/self.S))
             self.S += dS
             if max_change < tol:
