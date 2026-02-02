@@ -78,7 +78,7 @@ class Slab:
 
     # Now, let's create an inner class to handle line profile calculations
     class Line:
-        def __init__(self, d_lamb, a, r, k, l_0, slab_instance):
+        def __init__(self, d_lamb, a, r, k, l_0, slab_instance, epsilon):
             self.d_lamb = d_lamb  # Wavelength offset
             self.a = a  # Damping parameter
             self.r = r  # Line to continuum opacity ratio
@@ -87,9 +87,9 @@ class Slab:
             self.slab_instance = slab_instance  # Reference to the parent slab instance
             self.phi = None  # Profile function (will be computed later)
             self.J_scatter = None  # Scattered mean intensity initialization
-            self.epsilon = slab_instance.epsilon  # Thermalization parameter reference
+            self.epsilon = epsilon  # Thermalization parameter reference
             self.B = slab_instance.B  # Planck function reference
-            self.S = slab_instance.S  # Source function reference
+            
         
             # More parameters can be added as needed
             self.mu_values = None  
@@ -162,7 +162,18 @@ class Slab:
             self.J_scatter = J_inc
             del(J_inc)
 
-        # 
+        # Solve source function for this line
+        def solve_source_func_in_line(self, max_iter=1000, tol=1e-6, verbose=False):
+            # As a first step, we will implement a direct matrix inversion to solve NLTE problem. No iterations needed! 
+            # Just for the exercise, let's calculate new mu grid and weights here:
+            ND = self.slab_instance.ND
+            # Here we will implement ALO method to compute the source function S
+            # But first we need to calculate the full lambda operator 
+            L_full = calc_lambda_full(self.slab_instance.tau, self.mu_values, self.mu_weights, self.phi, self.x_weights)
+            A = np.eye(ND) - (1.0 - np.diag(self.epsilon)) * L_full
+            b = self.epsilon * self.B + (1.0 - self.epsilon) * self.J_scatter
+            self.S = np.linalg.solve(A, b)
+            
 
 
     def compute_tau(self):
@@ -533,6 +544,56 @@ class Slab:
         else:
             if (verbose):
                 print("info::formal_solution::source function did not converge within the maximum number of iterations.")
+
+    def composite_source(self, max_iter = 1000, tol = 1e-6, verbose=False):
+        self.NL = 41
+        self.NM = 3
+        d_lamb = 1.0
+        line1 = self.Line(d_lamb=d_lamb, a=0.1, r=0.0, k=1.0, l_0=0.0, slab_instance=self, epsilon=self.epsilon)
+        line2 = self.Line(d_lamb=d_lamb, a=0.2, r=0.0, k=8.0, l_0=0.0, slab_instance=self, epsilon=self.epsilon)
+        line1.compute_quadrature_weights(diffuse=True, verbose=verbose)
+        line2.compute_quadrature_weights(diffuse=True, verbose=verbose) 
+        line1.line_J_scatter()
+        line2.line_J_scatter()
+        # Now solve for source functions in both lines
+        line1.solve_source_func_in_line(max_iter=max_iter, tol=tol, verbose=False)
+        line2.solve_source_func_in_line(max_iter=max_iter, tol=tol, verbose=False)
+        # Combine the source functions
+        b_per_freq = (line1.phi + 1E-5) / (line1.phi + 8.0 * line2.phi + 1E-5)  # Shape: (NL,)
+        b_avg = np.sum(b_per_freq * line1.x_weights) / np.sum(line1.x_weights)  # Scalar: effective average weighting
+        for iteration in range(max_iter):
+            J_1 = np.zeros(self.ND)
+            J_2 = np.zeros(self.ND)
+            for m in range(0, self.NM):
+                for l in range(0, self.NL):
+                    mu = line1.mu_values[m]
+                    w_mu = line1.mu_weights[m]
+                    tau_lambda = self.tau * (line1.phi[l] + 8.0 * line2.phi[l]) 
+                    # Outward intensity
+                    I_lambda = sc_2nd_order(tau_lambda, line1.S, mu, 0.0)
+                    J_1 += I_lambda[0] * w_mu * 0.5 * line1.phi[l] * line1.x_weights[l]
+                    J_2 += I_lambda[0] * w_mu * 0.5 * line2.phi[l] * line2.x_weights[l]
+                    # Inward intensity
+                    I_lambda = sc_2nd_order(tau_lambda, line2.S, -mu, 0.0)
+                    J_1 += I_lambda[0] * w_mu * 0.5 * line1.phi[l] * line1.x_weights[l]
+                    J_2 += I_lambda[0] * w_mu * 0.5 * line2.phi[l] * line2.x_weights[l]
+            # Update source function taking into account J_scat
+            if (verbose):
+                print("info::formal_solution::J:", J_1)
+                print("info::formal_solution::J:", J_2)
+            dS_1 = self.epsilon * self.B + (1. - self.epsilon) * J_1 + line1.J_scatter - line1.S
+            dS_2 = self.epsilon * self.B + (1. - self.epsilon) * J_2 + line2.J_scatter - line2.S
+            dS = b_avg * dS_1 + (1.0 - b_avg) * dS_2 + self.J_scat
+            self.S += dS    
+            max_change = np.max(np.abs(dS/self.S))
+            if max_change < tol:
+                if (verbose):
+                    print(f"Converged after {iteration} iterations.")
+                break
+        else:
+            if (verbose):
+                print("info::formal_solution::source function did not converge within the maximum number of iterations.")   
+
 # if main
 if __name__ == "__main__":
     # Here we will define stuff and write proto-code to understand what is going on.
