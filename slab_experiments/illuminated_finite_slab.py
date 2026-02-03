@@ -13,25 +13,40 @@ import time
 # and spectral distribution. The goal is to compute the emergent intensity and the source function 
 # within the slab, taking into account both scattering and thermal emission.
 
-# The flow is something like this: 
-# 1. Define epsilon, B, parameters necessary for the calculation of line profile 
-#    (for example, we might not want to have constant line profile, but something that can 
-#    vary with location, and perhaps be shifted due to velocity fields).
-# 2. Calulate the J^scat, that is a constant, incoming radiation field which is basically
+# The flow is something like this / update 03/02/2026:
+# In this wversion of the flow we want to have multiple spectral lines in a slab
+
+# 1. Define epsilon, B, and other parameters that are common for all the lines 
+# 
+# 2  Here we also have to likely define the wavelength and angle grid. 
+#    Keep in mind that normalization of mu can be done here. But the normalization of x has to be done
+#    *separately* for each line, because each line has a different J and thus, in a way, different weights.
+#
+# 3. Define the lines and their variables
+
+# 3. Calulate the J^scat for each line , that is a constant, incoming radiation field which is basically
 #    the incoming intensity, attenuated by the optical depth in the slab. This is >>constant<<
 #    for given slab model.
-# 3. Given B, epsilon, J^scat, we can calculate the source function S at each depth point.
-#    For this we use the standard formal solution that we used since the start 
-#    and we use the good old ALO method to accelerate convergence.
-# 4. Once we have the source function, we can compute the emergent intensity at the surface
+#
+# 4. Given B, epsilon, J^scat, we can calculate the starting value for the source function S at 
+#    each depth point for each line.
+#    
+# 5. After that - we need the calculate *total* source function and total optical depth, taking 
+#    into account all the lines we are considering 
+# 
+# 6. Now we can solve RTE for each mu.
+# 
+# 7  Then we somehow iterate steps 4-6 until convergence.   
+
+# 8. Once we have converged the source function, we can compute the emergent intensity at the surface
 #    of the slab, and plot it vs wavelength.
 
-# 5. After that we can play with different parameters, e.g. slab thickness, epsilon, B,
+# 9. After that we can play with different parameters, e.g. slab thickness, epsilon, B,
 #    incident radiation field, and see how the emergent intensity changes. 
-# 6. The endgoal is to understand how the illumination affects the line formation in the slab,
+# 10. The endgoal is to understand how the illumination affects the line formation in the slab,
 #    what impact it has on the source function. For that to be more realistic, we can make a
 #    wrapper that will use all of this to fit our line to He I 1083 nm observations (Leennarts et al. 2025).
-# 7. The idea is to have tau_max, epsilon, B and as free parameters to fit the observations for 
+# 11. The idea is to have tau_max, epsilon, B and as free parameters to fit the observations for 
 #    different heights above the limb and a given wavelength grid.
 
 
@@ -51,14 +66,16 @@ class Slab:
         self.H = H  # Height above the surface
         self.tau = np.linspace(0, tau_max, ND) # This is too simple, but we will have a number of methods to calculate this
         self.S = np.zeros(ND)  # Source function initialization
+        
+        # Few more parameters to quantify the radiation field inside the slab
+        # IM: These are now somehow obsolete, because they now belong to the line: 
+        self.J_diff = np.zeros(ND) # Diffuse mean intensity
+        self.L = np.zeros(ND)  # Lambda operator diagonal
+        self.J_diff_lambda = 0.0 # Diffuse mean intensity per wavelength point. This a 2D array eventually
         self.J_scat = np.zeros(ND)  # Scattered mean intensity initialization
         self.r = 0.0 # line and continuum opacity ratio, eventually this shall probably be a parameter
         self.a = 0.0  # Voigt profile damping parameter
 
-        # Few more parameters to quantify the radiation field inside the slab
-        self.J_diff = np.zeros(ND) # Diffuse mean intensity
-        self.L = np.zeros(ND)  # Lambda operator diagonal
-        self.J_diff_lambda = 0.0 # Diffuse mean intensity per wavelength point. This a 2D array eventually
         
         # toy model absorption profile
         #self.phi = np.exp(-((np.linspace(-5, 5, 101))**2))  # Simple Gaussian profile
@@ -79,7 +96,7 @@ class Slab:
     # Now, let's create an inner class to handle line profile calculations
     class Line:
         def __init__(self, d_lamb, a, r, k, l_0, slab_instance, epsilon):
-            self.d_lamb = d_lamb  # Wavelength offset
+            #self.d_lamb = d_lamb  # Wavelength offset
             self.a = a  # Damping parameter
             self.r = r  # Line to continuum opacity ratio
             self.k = k  # Line opacity
@@ -87,11 +104,13 @@ class Slab:
             self.slab_instance = slab_instance  # Reference to the parent slab instance
             self.phi = None  # Profile function (will be computed later)
             self.J_scatter = None  # Scattered mean intensity initialization
+            self.J_diff    = None  # Diffuse mean intensity initialization
             self.epsilon = epsilon  # Thermalization parameter reference
             self.B = slab_instance.B  # Planck function reference
             
-        
             # More parameters can be added as needed
+            # IM: obratiti paznju da li da ovo bude ovde ili ne. Jer mu i x idu iz resenja JPZ, a ona nije vezana
+            # za specificnu liniju - vec je vezana za slab kao celinu. 
             self.mu_values = None  
             self.mu_weights = None
             self.x_values = None
@@ -103,6 +122,7 @@ class Slab:
             start = center - 4  
             stop = center + 4
             x_values = np.linspace(start, stop, self.slab_instance.NL)  # Frequency grid
+            # Obratiti paznju da ove x values moraju takodje biti zajednicke za sve
             self.x_values = x_values
             self.slab_instance.make_profile(x_values, self.a, type='voigt')
             self.phi = self.slab_instance.phi.copy()
