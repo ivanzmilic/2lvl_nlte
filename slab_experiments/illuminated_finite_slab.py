@@ -14,7 +14,7 @@ import time
 # within the slab, taking into account both scattering and thermal emission.
 
 # The flow is something like this / update 03/02/2026:
-# In this wversion of the flow we want to have multiple spectral lines in a slab
+# In this version of the flow we want to have multiple spectral lines in a slab
 
 # 1. Define epsilon, B, and other parameters that are common for all the lines 
 # 
@@ -95,24 +95,25 @@ class Slab:
 
     # Now, let's create an inner class to handle line profile calculations
     class Line:
-        def __init__(self, d_lamb, a, r, k, l_0, slab_instance, epsilon):
+        def __init__(self, a, r, k, l_0, slab_instance):
             #self.d_lamb = d_lamb  # Wavelength offset
             self.a = a  # Damping parameter
             self.r = r  # Line to continuum opacity ratio
             self.k = k  # Line opacity
             self.l_0 = l_0  # Central wavelength
             self.slab_instance = slab_instance  # Reference to the parent slab instance
+            self.norm = None  # Normalization factor (will be computed later)
             self.phi = None  # Profile function (will be computed later)
             self.J_scatter = None  # Scattered mean intensity initialization
-            self.J_diff    = None  # Diffuse mean intensity initialization
-            self.epsilon = epsilon  # Thermalization parameter reference
+            self.J_diff = None  # Diffuse mean intensity initialization
+            self.epsilon = slab_instance.epsilon  # Thermalization parameter reference
             self.B = slab_instance.B  # Planck function reference
             
             # More parameters can be added as needed
             # IM: obratiti paznju da li da ovo bude ovde ili ne. Jer mu i x idu iz resenja JPZ, a ona nije vezana
             # za specificnu liniju - vec je vezana za slab kao celinu. 
-            self.mu_values = None  
-            self.mu_weights = None
+            self.mu_values = slab_instance.mu_values
+            self.mu_weights = slab_instance.mu_weights
             self.x_values = None
             self.x_weights = None
         
@@ -127,39 +128,12 @@ class Slab:
             self.slab_instance.make_profile(x_values, self.a, type='voigt')
             self.phi = self.slab_instance.phi.copy()
 
-        def compute_quadrature_weights(self, diffuse=True, verbose=False):
+        def compute_quadrature_weights(self):
             self.compute_profile()
             # Frequency weights (assuming uniform spacing for simplicity)
-            self.x_weights = np.ones_like(self.phi) * (self.d_lamb) / len(self.phi)
-            self.x_weights /= np.sum(self.phi * self.x_weights)  # Normalize the weights
-            if (verbose):
-                print ("info::slab::compute_quadrature_weights: x_values = ", self.x_values)
-                print (self.phi)
-                print (self.x_weights)
-
-            mu_values, mu_weights = np.polynomial.legendre.leggauss(self.slab_instance.NM)  # Gaussian quadrature   
-            if (diffuse):
-                mu_crit = 0.0  # For diffuse radiation, we integrate over all angles
-            else:
-                mu_crit = (1.0 - (const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0))**0.5
-            if (verbose):
-                print ("info::slab::calculate_profiles_and_weights: mu_crit = ", mu_crit)
-            
-            # Now shift the weights and mu_values to pertain to the range [mu_crit, 1.0]
-            mu_values = 0.5 * (mu_values + 1.0) * (1.0 - mu_crit) + mu_crit
-            mu_weights = 0.5 * mu_weights * (1.0 - mu_crit)
-
-            if (verbose):
-                print ("info::slab::mu_values = ", mu_values)
-                print ("info::slab::mu_weights = ", mu_weights)
-                print ("info::slab::x_values = ", self.x_values)
-                print ("info::slab::x_weights = ", self.x_weights)
-                print ("info::slab::mu_norm:", np.sum(mu_weights))
-
-            
-            mu_weights /= np.sum(mu_weights)/(1.0-mu_crit)  # Normalize weights
-            self.mu_values = mu_values
-            self.mu_weights = mu_weights
+            self.x_weights = np.ones_like(self.x_values) * (self.x_values[1] - self.x_values[0])  # Uniform spacing
+            self.norm = np.sum(self.phi * self.x_weights)
+            self.x_weights /= self.norm  # Normalize the weights
 
         def line_J_scatter(self):
             # This function will compute the J_scat for this line
@@ -182,17 +156,46 @@ class Slab:
             self.J_scatter = J_inc
             del(J_inc)
 
-        # Solve source function for this line
-        def solve_source_func_in_line(self, max_iter=1000, tol=1e-6, verbose=False):
-            # As a first step, we will implement a direct matrix inversion to solve NLTE problem. No iterations needed! 
-            # Just for the exercise, let's calculate new mu grid and weights here:
-            ND = self.slab_instance.ND
-            # Here we will implement ALO method to compute the source function S
-            # But first we need to calculate the full lambda operator 
-            L_full = calc_lambda_full(self.slab_instance.tau, self.mu_values, self.mu_weights, self.phi, self.x_weights)
-            A = np.eye(ND) - (1.0 - np.diag(self.epsilon)) * L_full
-            b = self.epsilon * self.B + (1.0 - self.epsilon) * self.J_scatter
-            self.S = np.linalg.solve(A, b)
+        # Solve source function for this line using lambda iteration method
+        def solve_source_function_line_LI(self, max_iter=1000, tol=1e-6, verbose=False, silent = False):
+            self.S = self.B.copy()  # Initial guess for source function 
+            self.compute_quadrature_weights()
+            for it in range(max_iter):
+                self.J_diff = np.zeros(self.slab_instance.ND)
+                for m in range(0, self.NM):
+                    for l in range(0, self.NL):
+                        mu = self.mu_values[m]
+                        w_mu = self.mu_weights[m]
+                        tau_lambda = self.tau * (self.phi[l] + self.r)
+                        #print("info::formal_solution tau, l and phi: ", tau_lambda, l, self.phi[l])
+                        # Outward intensity
+                        I_lambda  = sc_2nd_order(tau_lambda, self.S, mu, 0.0)
+                        self.J_diff[:,l] += I_lambda[0] * w_mu * 0.5
+                        self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+
+                        # Inward intensity
+                        I_lambda  = sc_2nd_order(tau_lambda, self.S, -mu, 0.0)
+                        self.J_diff[:,l] += I_lambda[0] * w_mu * 0.5 
+                        self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+                # Sum up J over frequency
+                self.J = np.sum(self.J_diff*self.phi[None,:]*self.x_weights[None,:], axis=1)
+                self.J_diff = self.J_diff  # Keep J_diff for possible diagnostics
+                # Update source function taking into account J_scat  
+                if (verbose):
+                    print("info::formal_solution::J:", self.J)
+                    print("info::formal_solution::L:", self.L)
+                dS = (self.epsilon * self.B + (1. - self.epsilon) * self.J + self.J_scatter - self.S) / (1. - (1. - self.epsilon) * self.L)
+                self.S += dS
+                #Check for convergence
+                rel_error = np.max(np.abs(dS / self.S))
+                if rel_error < tol: 
+                    if (not silent):
+                        print(f"Converged after {it} iterations.")
+                    break
+            else:
+                if (not silent):
+                    print("info::formal_solution::source function did not converge within the maximum number of iterations.")
+
             
 
 
