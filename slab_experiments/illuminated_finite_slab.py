@@ -95,7 +95,7 @@ class Slab:
 
     # Now, let's create an inner class to handle line profile calculations
     class Line:
-        def __init__(self, a, r, k, l_0, slab_instance):
+        def __init__(self, a, r, k, l_0, slab_instance, x_local=None):
             #self.d_lamb = d_lamb  # Wavelength offset
             self.a = a  # Damping parameter
             self.r = r  # Line to continuum opacity ratio
@@ -103,101 +103,59 @@ class Slab:
             self.l_0 = l_0  # Central wavelength
             self.slab_instance = slab_instance  # Reference to the parent slab instance
             self.norm = None  # Normalization factor (will be computed later)
-            self.phi = None  # Profile function (will be computed later)
+            self.phi = None  # Profile on the line's own x grid
+            self.phi_global = None  # Profile sampled on slab global x grid
+            self.x_values = x_local  # local x grid (may be None until compute_profile)
+            self.x_weights = None  # weights on the grid that matches x_values (used if local)
             self.J_scatter = None  # Scattered mean intensity initialization
             self.J_diff = None  # Diffuse mean intensity initialization
             self.epsilon = slab_instance.epsilon  # Thermalization parameter reference
             self.B = slab_instance.B  # Planck function reference
             
             # More parameters can be added as needed
-            # IM: obratiti paznju da li da ovo bude ovde ili ne. Jer mu i x idu iz resenja JPZ, a ona nije vezana
-            # za specificnu liniju - vec je vezana za slab kao celinu. 
             self.mu_values = slab_instance.mu_values
             self.mu_weights = slab_instance.mu_weights
-            self.x_values = None
-            self.x_weights = None
-        
-        # Method to compute the Voigt profile
-        def compute_profile(self):
-            center = self.l_0
-            start = center - 4  
-            stop = center + 4
-            x_values = np.linspace(start, stop, self.slab_instance.NL)  # Frequency grid
-            # Obratiti paznju da ove x values moraju takodje biti zajednicke za sve
-            self.x_values = x_values
-            self.slab_instance.make_profile(x_values, self.a, type='voigt')
+            self.idx_range = None  # indices of global grid where this line contributes
+
+        # Method to compute the Voigt profile on the line-local x grid (or given x)
+        def compute_profile(self, x=None):
+            if x is None:
+                # default local grid centered on l_0 in Doppler units
+                NL = getattr(self.slab_instance, "NL", 41)
+                start = self.l_0 - 4
+                stop = self.l_0 + 4
+                x = np.linspace(start, stop, NL)
+            self.x_values = x
+            # make_profile expects Doppler-like offsets; keep existing behavior
+            # If x is absolute-centered already, pass it through (existing code did same)
+            self.slab_instance.make_profile(x, self.a, type='voigt')
             self.phi = self.slab_instance.phi.copy()
+            # local normalization and local x_weights (uniform)
+            dx = np.gradient(self.x_values)
+            self.x_weights = dx.copy()
+            norm = np.sum(self.phi * self.x_weights)
+            if norm > 0:
+                self.x_weights /= norm
+            self.norm = norm
 
-        def compute_quadrature_weights(self):
-            self.compute_profile()
-            # Frequency weights (assuming uniform spacing for simplicity)
-            self.x_weights = np.ones_like(self.x_values) * (self.x_values[1] - self.x_values[0])  # Uniform spacing
-            self.norm = np.sum(self.phi * self.x_weights)
-            self.x_weights /= self.norm  # Normalize the weights
-
-        def line_J_scatter(self):
-            # This function will compute the J_scat for this line
-            ND = self.slab_instance.ND
-            J_inc = np.zeros(ND)
-            for i in range(ND):
-                for m in range(0, self.slab_instance.NM):
-                    mu = self.mu_values[m]
-                    w_mu = self.mu_weights[m]
-                    for n in range(0, self.slab_instance.NL):
-                        x = self.x_values[n]
-                        w_x = self.x_weights[n]
-                        # Fetch the appropriate incident intensity
-                        I_inc = self.slab_instance.get_boundary_radiation(mu)  # Simple Gaussian profile
-                        # Attenuation by optical depth
-                        tau_eff = (self.slab_instance.tau_max - self.slab_instance.tau[i]) / mu * self.phi[n]
-                        I_attenuated = I_inc * np.exp(-tau_eff)
-                        J_inc[i] += I_attenuated * self.phi[n] * w_mu * w_x / 2.0  # Divide by 2 for J    
-
-            self.J_scatter = J_inc
-            del(J_inc)
-
-        # Solve source function for this line using lambda iteration method
-        def solve_source_function_line_LI(self, max_iter=1000, tol=1e-6, verbose=False, silent = False):
-            self.S = self.B.copy()  # Initial guess for source function 
-            self.compute_quadrature_weights()
-            for it in range(max_iter):
-                self.J_diff = np.zeros(self.slab_instance.ND)
-                for m in range(0, self.NM):
-                    for l in range(0, self.NL):
-                        mu = self.mu_values[m]
-                        w_mu = self.mu_weights[m]
-                        tau_lambda = self.tau * (self.phi[l] + self.r)
-                        #print("info::formal_solution tau, l and phi: ", tau_lambda, l, self.phi[l])
-                        # Outward intensity
-                        I_lambda  = sc_2nd_order(tau_lambda, self.S, mu, 0.0)
-                        self.J_diff[:,l] += I_lambda[0] * w_mu * 0.5
-                        self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
-
-                        # Inward intensity
-                        I_lambda  = sc_2nd_order(tau_lambda, self.S, -mu, 0.0)
-                        self.J_diff[:,l] += I_lambda[0] * w_mu * 0.5 
-                        self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
-                # Sum up J over frequency
-                self.J = np.sum(self.J_diff*self.phi[None,:]*self.x_weights[None,:], axis=1)
-                self.J_diff = self.J_diff  # Keep J_diff for possible diagnostics
-                # Update source function taking into account J_scat  
-                if (verbose):
-                    print("info::formal_solution::J:", self.J)
-                    print("info::formal_solution::L:", self.L)
-                dS = (self.epsilon * self.B + (1. - self.epsilon) * self.J + self.J_scatter - self.S) / (1. - (1. - self.epsilon) * self.L)
-                self.S += dS
-                #Check for convergence
-                rel_error = np.max(np.abs(dS / self.S))
-                if rel_error < tol: 
-                    if (not silent):
-                        print(f"Converged after {it} iterations.")
-                    break
+        # Prepare / sample this line on the slab global x grid
+        def prepare_on_global(self, x_global, thresh=1e-12):
+            # ensure local profile exists
+            if self.x_values is None or self.phi is None:
+                self.compute_profile()
+            # interpolate local phi onto global grid
+            self.phi_global = np.interp(x_global, self.x_values, self.phi, left=0.0, right=0.0)
+            # store index range where profile is significant
+            self.idx_range = np.nonzero(self.phi_global > thresh)[0]
+            # set x_weights on the global grid appropriate for this line (normalized w.r.t phi_global)
+            dx_global = np.gradient(x_global)
+            w = dx_global.copy()
+            norm = np.sum(self.phi_global * w)
+            if norm > 0:
+                self.x_weights = w / norm
             else:
-                if (not silent):
-                    print("info::formal_solution::source function did not converge within the maximum number of iterations.")
-
-            
-
+                self.x_weights = w
+            self.norm = norm
 
     def compute_tau(self):
         # As the most robust method we will use log-spaced grid on both sides.
