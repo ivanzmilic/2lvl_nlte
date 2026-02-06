@@ -1,9 +1,11 @@
+from matplotlib import lines
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 import astropy.units as units
 import astropy.constants as const
 from scipy.special import wofz
+from sympy import Line
 from tqdm import tqdm
 from rtfunctions import one_full_fs, sc_2nd_order, calc_lambda_full, calc_lambda_monoc
 import time
@@ -120,6 +122,11 @@ class Slab:
             self.J_scatter = J_inc
             del(J_inc)
 
+        # Now we can compute the source function for the line on the global x grid, which will be used to compute the emergent spectrum.
+        def compute_S_line(self, max_iter = 1000, tol = 1e-6):
+            ND = self.slab_in.ND
+            
+
     def compute_tau(self):
     # As the most robust method we will use log-spaced grid on both sides.
     # First we check the total ND, and make sure it's odd
@@ -145,6 +152,13 @@ class Slab:
         # Concatenate and sort the global x grid
         self.x_values = np.sort(np.concatenate(all_x))
     
+    def compute_phi(self, lines):
+        # We will compute the total line profile phi at each point in the global x grid by summing the contributions from all lines
+        self.phi = np.zeros_like(self.x_values)
+        for line in lines:
+            line.compute_phi_x(self.x_values)  # Compute the line profile for this line at the global x grid
+            self.phi += line.r * line.phi_x  # Add the contribution from this line, weighted by its opacity ratio r
+    
     def mu_grid(self, N_mu, verbose=False, diffuse=False):
         self.mu_values, self.mu_weights = np.polynomial.legendre.leggauss(N_mu)  # Gauss-Legendre quadrature for mu grid
         if diffuse:
@@ -162,6 +176,35 @@ class Slab:
             print(f"Mu values: {self.mu_values}")
             print(f"Mu weights: {self.mu_weights}")
 
+    def get_boundary_radiation(self, mu):
+        # Here we are going to write a function that relates the mu in the slab referent frame to the outgoing 
+        # limb darkening emerging from the solar surface. For the moment we will assume it is wavelength independent.     
+        factor = 1.0 - ((1.0 - mu**2.0) * const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0)
+        if factor < 0.0:
+            return 0.0
+        else:
+            mu_0 = factor**0.5
+            # Simple linear limb darkening law
+            # For more accuarate modeling we can use Claret coefficients for V filter (https://ui.adsabs.harvard.edu/abs/2000A&A...363.1081C/abstract)
+            # Plot how this below looks like to make sure it goes from 1.0 at mu=1.0 to ~0.4 at mu=0.0 (or so)
+            I_0 = 1 - 0.5311 * (1 - mu_0**0.5) + 0.0545 * (1 - mu_0) - 0.7301 * (1 - mu_0**1.5) + 0.4053 * (1 - mu_0**2)
+            #I_0 = 0.4 + 0.6 * mu_0
+            return I_0
 
-
-    
+    # Define formal solution for the emergent spectrum that lines can call for their source function
+    def formal_solution(self, x_obs, mu_obs, boundary_condition):
+        spectrum = np.zeros(len(x_obs))
+        line1 = Line(NL=100, line_center=0.0, a=0.1, k=1.0, r=0.0, slab_in=self)  # Example line, we will need to pass the slab instance to the line
+        line2 = Line(NL=100, line_center=3.2, a=0.2, k=8.0, r=0.0, slab_in=self)  # Another example line
+        self.global_x_grid([line1, line2])  # Make sure the global x grid is generated before we compute the emergent spectrum
+        self.mu_grid(self.ND, verbose=False, diffuse=False)  # Generate the mu grid for the slab, this will be used to compute J_scat
+        self.compute_phi([line1, line2])  # Compute the total line profile phi for all lines in the slab
+        for l in range(len(x_obs)):
+            # For each frequency point, compute the emergent intensity
+            tau_lambda = self.tau * (self.phi[l] + self.r)
+            I_emergent = sc_2nd_order(tau_lambda, self.S, mu_obs, boundary_condition)
+     
+            #print('!!!!!!!!', I_emergent[0].shape)
+            spectrum[l] = I_emergent[0,0]  # Store the emergent intensity only, we don't need the lambda operator here
+        
+        return spectrum  # Return the emerg
