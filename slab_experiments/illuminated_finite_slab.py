@@ -689,12 +689,17 @@ if __name__ == "__main__":
     S_direct = slab.S
     print ("info::main: Source function S (ALO) = ", S_direct)
 
+    slab.solve_source_function_LI_2comp(max_iter=200, tol=1e-6, verbose=False)
+    S_2LI = slab.S
+
     # Plot the source function (ALO, Direct) vs tau, and J_scat vs tau
 
     plt.figure(figsize=(8,6))
     plt.semilogy(np.log10(slab.tau),S_alo, linestyle = "-", linewidth = 3, color = "orange", label="S ALO")
     plt.semilogy(np.log10(slab.tau),slab.J_scat, label="J_scat")
     plt.semilogy(np.log10(slab.tau),S_direct, linestyle = "--", color = "green", alpha = 1.0, label="S Direct")
+    plt.semilogy(np.log10(slab.tau),S_2LI, linestyle = "-.", color = "blue", alpha = 1.0, label="S LI 2comp")
+    #plt.semilogy(np.log10(slab.tau),S, linestyle = "--", color = "red", alpha = 1.0, label="Planck Function")
     #plt.plot(np.log10(slab.tau),S_direct, linestyle = "-.", color = "blue", alpha = 0.5, label="S, ALO solved")
     plt.xlabel("log10(Tau)")
     plt.ylabel("Source Function / J_scat")
@@ -705,10 +710,11 @@ if __name__ == "__main__":
     plt.savefig(f"source_function_jscat_ND_{ND}_taum_{tau_max}_eps_{epsilon[0]}_B_{B[0]}.png",bbox_inches='tight')
     #plt.show()
     
-
+    
     # Other variant where we use the depth index to plot all the variables
     plt.figure(figsize=(8,6))
     plt.semilogy(S_alo, linestyle = "-", linewidth = 3, color = "orange", label="S ALO")
+    plt.semilogy(S_2LI, linestyle = "-.", linewidth = 3, color = "blue", label="S LI 2comp")
     plt.semilogy(slab.J_scat, label="J_scat")
     plt.semilogy(slab.B, linestyle = "--", color = "red", alpha = 1.0, label="Planck Function")
     plt.semilogy(S_direct, linestyle = "--", color = "green", alpha = 1.0, label="S Direct")

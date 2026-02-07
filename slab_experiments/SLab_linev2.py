@@ -1,11 +1,11 @@
 from matplotlib import lines
 import numpy as np
 import matplotlib.pyplot as plt
+from pyparsing import line
 from scipy.stats import norm
 import astropy.units as units
 import astropy.constants as const
 from scipy.special import wofz
-from sympy import Line
 from tqdm import tqdm
 from rtfunctions import one_full_fs, sc_2nd_order, calc_lambda_full, calc_lambda_monoc
 import time
@@ -43,7 +43,8 @@ class Slab:
         self.B = B # Planck function
         self.H = H # height at which the slab is illuminated
         self.tau_grid = np.linspace(0, tau_max, ND) # optical depth grid
-
+        self.NM = None  # Number of mu points, to be set later when we generate the mu grid
+        self.S = np.zeros(ND)  # Source function, to be calculated later
         # More parameters:
         self.mu_values = None
         self.mu_weights = None
@@ -67,6 +68,7 @@ class Slab:
             # Line characteristics
             self.J_scat = None  # Scattered radiation field, to be calculated later
             self.J_diff = None  # Diffuse radiation field, to be calculated later
+            self.J = None  # Total radiation field, to be calculated later
             self.S_line = None  # Source function for this line, to be calculated later
             self.norm = None  # Normalization factor for the line profile, to be calculated later
             self.x_weights = None  # Weights for the local x grid, to be calculated later
@@ -125,7 +127,42 @@ class Slab:
         # Now we can compute the source function for the line on the global x grid, which will be used to compute the emergent spectrum.
         def compute_S_line(self, max_iter = 1000, tol = 1e-6):
             ND = self.slab_in.ND
-            
+            self.slab_in.mu_grid(self.slab_in.ND, verbose=False, diffuse=False)  # Generate the mu grid for the slab, this will be used to compute J_scat
+            #self.J_diff = np.zeros((ND, self.NL))
+            self.local_x_grid()
+            self.compute_phi_x(self.x_grid)  # Compute the line profile at the local x grid, this will be used to compute the source function
+            self.compute_weights(verbose=False)  # Compute the weights for the local x grid, this will be used to compute the source function
+            self.S_line = np.copy(self.B)  # Initial guess for the source function, we can start with the Planck function
+            # We will use LI method to iteratively solve for the source function.
+            # We will use emergent spectrum to compute the mean intensity J, and then update the source function.
+            for iteration in range(max_iter):
+                self.J = np.zeros(ND)
+                for m in range(0, self.slab_in.NM):
+                    for l in range(len(self.x_grid)):
+                        mu = self.slab_in.mu_values[m]
+                        w_mu = self.slab_in.mu_weights[m]
+                        x = self.x_grid[l]
+                        w_x = self.x_weights[l]
+                        tau_lambda = self.slab_in.tau * (self.phi_x[l]*self.k + self.r)  # Total optical depth at this frequency point, including contributions from the line and the continuum
+                        # Outward intensity with positive mu
+                        I_line = sc_2nd_order(tau_lambda, self.S_line, mu, 0.0)
+                        self.J += I_line[0] * self.phi_x[l] * w_mu * w_x / 2.0
+
+                        # Inward intensity with negative mu
+                        I_line = sc_2nd_order(tau_lambda, self.S_line, -mu, 0.0)
+                        self.J += I_line[0] * self.phi_x[l] * w_mu * w_x / 2.0
+                        
+                # Sum J over frequency points
+                # self.J = np.sum(self.J_diff*self.phi_x[None,:]*self.x_weights[None,:], axis=1)
+                # Update the source function using the new J
+                S_new = self.epsilon * self.B + (1 - self.epsilon) * self.J
+                # Check for convergence
+                if np.max(np.abs(S_new - self.S_line) / self.B) < tol:
+                    print(f"Source function converged after {iteration} iterations.")
+                    break
+                self.S_line = S_new  # Update the source function for the next iteration
+            else:
+                print("Source function did not converge within the maximum number of iterations.")
 
     def compute_tau(self):
     # As the most robust method we will use log-spaced grid on both sides.
@@ -141,6 +178,14 @@ class Slab:
         tau_second_half = self.tau_max + tau_first_half[0] - tau_first_half[::-1]
         # Put these two together
         self.tau = np.concatenate((tau_first_half, tau_second_half[1:]))
+
+    def global_tau(self, lines):
+        # We will compute the global tau grid by summing the contributions from all lines and the continuum
+        self.tau_grid = np.zeros_like(self.tau)
+        for line in lines:
+            line.local_x_grid()  # Generate the local x grid for this line
+            line.compute_phi_x(line.x_grid)  # Compute the line profile for this line at the local x grid
+            self.tau_grid += self.tau * (line.phi_x * line.k + line.r)  # Add the contribution from this line, weighted by its opacity ratio r
 
     def global_x_grid(self, lines):
         # We will concatenate the local x grids from all lines and then sort them
@@ -160,6 +205,7 @@ class Slab:
             self.phi += line.r * line.phi_x  # Add the contribution from this line, weighted by its opacity ratio r
     
     def mu_grid(self, N_mu, verbose=False, diffuse=False):
+        self.NM = N_mu
         self.mu_values, self.mu_weights = np.polynomial.legendre.leggauss(N_mu)  # Gauss-Legendre quadrature for mu grid
         if diffuse:
             mu_crit = 0.0
@@ -167,6 +213,7 @@ class Slab:
             mu_crit = (1.0 - (const.R_sun.value**2.0 / (const.R_sun.value + self.H)**2.0))**0.5
         if verbose:
             print(f"Critical mu for illumination: {mu_crit}")
+    
 
         # Now shift mu values to account for the critical mu, i.e. to pertain to the range [mu_crit, 1.0]
         self.mu_values = 0.5 * (self.mu_values + 1.0) * (1.0 - mu_crit) + mu_crit
@@ -192,19 +239,59 @@ class Slab:
             return I_0
 
     # Define formal solution for the emergent spectrum that lines can call for their source function
-    def formal_solution(self, x_obs, mu_obs, boundary_condition):
-        spectrum = np.zeros(len(x_obs))
-        line1 = Line(NL=100, line_center=0.0, a=0.1, k=1.0, r=0.0, slab_in=self)  # Example line, we will need to pass the slab instance to the line
-        line2 = Line(NL=100, line_center=3.2, a=0.2, k=8.0, r=0.0, slab_in=self)  # Another example line
+    def formal_solution(self, S, mu_values, boundary_condition='outward'):
+        line1 = self.Line(41, line_center=0.0, a=0.1, k=1.0, r=0.0, slab_in=self)  # Example line, we will need to pass the slab instance to the line
+        line2 = self.Line(41, line_center=3.2, a=0.2, k=8.0, r=0.0, slab_in=self)  # Another example line
         self.global_x_grid([line1, line2])  # Make sure the global x grid is generated before we compute the emergent spectrum
-        self.mu_grid(self.ND, verbose=False, diffuse=False)  # Generate the mu grid for the slab, this will be used to compute J_scat
+        self.mu_grid(N_mu=8, verbose=False, diffuse=False)  # Generate the mu grid for the slab, this will be used to compute J_scat
         self.compute_phi([line1, line2])  # Compute the total line profile phi for all lines in the slab
-        for l in range(len(x_obs)):
-            # For each frequency point, compute the emergent intensity
-            tau_lambda = self.tau * (self.phi[l] + self.r)
-            I_emergent = sc_2nd_order(tau_lambda, self.S, mu_obs, boundary_condition)
-     
-            #print('!!!!!!!!', I_emergent[0].shape)
-            spectrum[l] = I_emergent[0,0]  # Store the emergent intensity only, we don't need the lambda operator here
-        
-        return spectrum  # Return the emerg
+        spectrum = np.zeros(len(self.x_values))
+        self.S = np.copy(S)
+        if boundary_condition == 'outward':
+            for l in range(len(self.x_values)):
+                # For each frequency point, compute the emergent intensity
+                tau_lambda = self.tau * (line1.phi_x[l]*line1.k + line2.phi_x[l]*line2.k + line1.r + line2.r)  # Total optical depth at this frequency point, including contributions from both lines and the continuum
+                I_emergent = sc_2nd_order(tau_lambda, self.S, self.mu_values, boundary_condition)
+                #print('!!!!!!!!', I_emergent[0].shape)
+                spectrum[l] = I_emergent[0,0]  # Store the emergent intensity only, we don't need the lambda operator here
+        if boundary_condition == 'inward':
+            for l in range(len(self.x_values)):
+                # For each frequency point, compute the inward intensity
+                tau_lambda = self.tau * (line1.phi_x[l]*line1.k + line2.phi_x[l]*line2.k + line1.r + line2.r)
+                I_inward = sc_2nd_order(tau_lambda, self.S, -self.mu_values, boundary_condition)
+                spectrum[l] = I_inward[0,0]  # Store the inward intensity only, we don't need the lambda operator here
+        return spectrum  # Return the emergent spectrum
+    
+
+if __name__ == "__main__":
+   
+    
+    # Define the input parameters
+    ND = 81
+    tau_max = 1e3
+    epsilon = np.ones(ND) * 5e-3
+    B = np.ones(ND) * 5.0
+    H = 80000.0 # Height of the slab above the solar surface in kilometers
+
+    # Create the slab instance
+    slab = Slab(ND, tau_max, epsilon, B, H)
+    # Create the line instances
+    line1 = slab.Line(81, line_center=0.0, a=0.1, k=1.0, r=0.0, slab_in=slab)  # Example line, we will need to pass the slab instance to the line   
+    line2 = slab.Line(81, line_center=3.2, a=0.2, k=8.0, r=0.0, slab_in=slab)  # Another example line
+    lines = [line1, line2]  
+    # Compute the source function for each line
+    
+    line1.compute_S_line()
+    line2.compute_S_line()
+
+    # Plot the source function for each line vs index
+    plt.figure(figsize=(10, 6))
+    plt.plot(slab.tau, line1.S_line, label='Line 1 Source Function')
+    plt.plot(slab.tau, line2.S_line, label='Line 2 Source Function')
+    plt.xscale('log')
+    plt.xlabel('Optical Depth (tau)')
+    plt.ylabel('Source Function (S)')
+    plt.title('Source Function for Each Line')
+    plt.legend()
+    plt.grid()
+    plt.show()
