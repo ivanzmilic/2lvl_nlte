@@ -146,10 +146,12 @@ class Slab:
                         tau_lambda = self.slab_in.tau * (self.phi_x[l]*self.k + self.r)  # Total optical depth at this frequency point, including contributions from the line and the continuum
                         # Outward intensity with positive mu
                         I_line = sc_2nd_order(tau_lambda, self.S_line, mu, 0.0)
+                        #I_line = self.slab_in.formal_solution(self.S_line, mu, boundary_condition='outward')
                         self.J += I_line[0] * self.phi_x[l] * w_mu * w_x / 2.0
 
                         # Inward intensity with negative mu
                         I_line = sc_2nd_order(tau_lambda, self.S_line, -mu, 0.0)
+                        #I_line = self.slab_in.formal_solution(self.S_line, -mu, boundary_condition='inward')
                         self.J += I_line[0] * self.phi_x[l] * w_mu * w_x / 2.0
                         
                 # Sum J over frequency points
@@ -163,6 +165,92 @@ class Slab:
                 self.S_line = S_new  # Update the source function for the next iteration
             else:
                 print("Source function did not converge within the maximum number of iterations.")
+
+            # New method: compute source function using emergent intensity on the slab global x-grid
+        def compute_S_line_global(self, lines, max_iter=1000, tol=1e-6, verbose=False, N_mu=8):
+            """
+            Lambda-iteration over depth (tau), angle (mu) and frequency (x_local).
+            Uses sc_2nd_order to obtain intensities at every depth for the total (global) tau_lambda
+            computed from the full set of 'lines'. The local line source function is updated
+            using the mean intensity constructed from those intensities (loop order: tau, mu, x).
+            """
+            slab = self.slab_in
+            ND = slab.ND
+
+            # Build global frequency grid and total profiles on it
+            slab.global_x_grid(lines)
+            slab.compute_phi(lines)  # sets each line.phi_x on slab.x_values
+            global_x = slab.x_values
+
+            # Ensure mu grid for radiative transfer
+            slab.mu_grid(N_mu, verbose=False, diffuse=False)
+
+            # Prepare this line's local grid, local phi and local weights (do not overwrite line.phi_x on global grid)
+            self.local_x_grid()
+            x_local = self.x_grid.copy()
+            # local Voigt/Gauss profile (compute locally)
+            phi_local = np.real(wofz(x_local + 1j * self.a)) / np.sqrt(np.pi)
+            # simple uniform frequency weights on local grid normalized by profile
+            xw = np.ones_like(x_local) * (x_local[-1] - x_local[0]) / len(x_local)
+            xw = xw / np.sum(phi_local * xw)
+            self.x_weights = xw
+
+            # Map each local frequency to nearest index on global grid
+            idx_map = np.array([np.argmin(np.abs(global_x - xv)) for xv in x_local], dtype=int)
+
+            # Initial guess for the source function (per depth)
+            S_curr = np.copy(self.B)
+
+            # Pre-extract list reference for speed
+            lines_list = lines
+
+            for it in range(max_iter):
+                J = np.zeros(ND)  # mean intensity per depth for this line
+                # Loop order: mu -> x (local)
+                for m in range(slab.NM):
+                    mu = slab.mu_values[m]
+                    w_mu = slab.mu_weights[m]
+                    for lx in range(len(x_local)):
+                        g = idx_map[lx]  # corresponding global frequency index
+                        # total optical depth at this global frequency (sum over all lines + continuum r)
+                        tau_lambda = slab.tau * np.sum([ (ln.phi_x[g] * ln.k + ln.r) for ln in lines_list ], axis=0)
+                        # obtain intensities at all depths for this tau_lambda and current S_curr
+                        I_res = sc_2nd_order(tau_lambda, S_curr, mu, 0.0)
+                        # sc_2nd_order typically returns array-like; take first element if tuple/list
+                        if isinstance(I_res, (tuple, list)):
+                            I_all = np.asarray(I_res[0])
+                        else:
+                            I_all = np.asarray(I_res)
+                        # accumulate J at all depths (angle and frequency integration), divide by 2 for angular averaging over both hemispheres
+                        J += I_res[0] * phi_local[lx] * w_mu * xw[lx] / 2.0
+
+                        I_res = sc_2nd_order(tau_lambda, S_curr, -mu, 0.0)
+                        if isinstance(I_res, (tuple, list)):
+                            I_all = np.asarray(I_res[0])
+                        else:
+                            I_all = np.asarray(I_res)       
+                        J += I_res[0] * phi_local[lx] * w_mu * xw[lx] / 2.0 
+
+                # Update source function (local line)
+                S_new = self.epsilon * self.B + (1.0 - self.epsilon) * J
+
+                # Convergence check (relative to Planck B)
+                if np.max(np.abs(S_new - S_curr) / (np.abs(self.B) + 1e-30)) < tol:
+                    if verbose:
+                        print(f"compute_S_line_global: converged in {it} iterations")
+                    S_curr = S_new
+                    break
+
+                S_curr = S_new
+
+            else:
+                if verbose:
+                    print("compute_S_line_global: did not converge within max_iter")
+
+            # store result
+            self.S_line = S_curr
+            return self.S_line
+            
 
     def compute_tau(self):
     # As the most robust method we will use log-spaced grid on both sides.
@@ -239,7 +327,7 @@ class Slab:
             return I_0
 
     # Define formal solution for the emergent spectrum that lines can call for their source function
-    def formal_solution(self, S, mu_values, boundary_condition='outward'):
+    def formal_solution(self, S, mu_ob, boundary_condition='outward'):
         line1 = self.Line(41, line_center=0.0, a=0.1, k=1.0, r=0.0, slab_in=self)  # Example line, we will need to pass the slab instance to the line
         line2 = self.Line(41, line_center=3.2, a=0.2, k=8.0, r=0.0, slab_in=self)  # Another example line
         self.global_x_grid([line1, line2])  # Make sure the global x grid is generated before we compute the emergent spectrum
@@ -251,21 +339,20 @@ class Slab:
             for l in range(len(self.x_values)):
                 # For each frequency point, compute the emergent intensity
                 tau_lambda = self.tau * (line1.phi_x[l]*line1.k + line2.phi_x[l]*line2.k + line1.r + line2.r)  # Total optical depth at this frequency point, including contributions from both lines and the continuum
-                I_emergent = sc_2nd_order(tau_lambda, self.S, self.mu_values, boundary_condition)
+                I_emergent = sc_2nd_order(tau_lambda, self.S, mu_ob, boundary_condition)
                 #print('!!!!!!!!', I_emergent[0].shape)
                 spectrum[l] = I_emergent[0,0]  # Store the emergent intensity only, we don't need the lambda operator here
         if boundary_condition == 'inward':
             for l in range(len(self.x_values)):
                 # For each frequency point, compute the inward intensity
                 tau_lambda = self.tau * (line1.phi_x[l]*line1.k + line2.phi_x[l]*line2.k + line1.r + line2.r)
-                I_inward = sc_2nd_order(tau_lambda, self.S, -self.mu_values, boundary_condition)
+                I_inward = sc_2nd_order(tau_lambda, self.S, -mu_ob, boundary_condition)
                 spectrum[l] = I_inward[0,0]  # Store the inward intensity only, we don't need the lambda operator here
         return spectrum  # Return the emergent spectrum
     
 
 if __name__ == "__main__":
    
-    
     # Define the input parameters
     ND = 81
     tau_max = 1e3
@@ -293,5 +380,22 @@ if __name__ == "__main__":
     plt.ylabel('Source Function (S)')
     plt.title('Source Function for Each Line')
     plt.legend()
+    plt.grid()
+    plt.show()
+
+
+    slab.global_x_grid(lines)
+    slab.compute_phi(lines)
+    S_1 = line1.compute_S_line_global(lines, max_iter=1000, tol=1e-6, verbose=True, N_mu=8)
+    S_2 = line2.compute_S_line_global(lines, max_iter=1000, tol=1e-6, verbose=True, N_mu=8)
+    # Plot the source function for each line vs index
+    plt.figure(figsize=(10, 6))
+    plt.plot(slab.tau, S_1, label='Line 1 Source Function (Global)')
+    plt.plot(slab.tau, S_2, label='Line 2 Source Function (Global)')
+    plt.xscale('log')
+    plt.xlabel('Optical Depth (tau)')
+    plt.ylabel('Source Function (S)')
+    plt.legend()
+    plt.title('Source Function for Each Line (Global x-grid)')
     plt.grid()
     plt.show()
