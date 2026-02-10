@@ -144,6 +144,60 @@ class Slab:
             self.J_scatter = J_inc
             del(J_inc)
 
+        def compute_S_line(self, max_iter = 1000, tol = 1e-6, global_x_grid = None):
+            # Use slab global grid if not provided
+            if global_x_grid is None:
+                if getattr(self.slab_in, "x_values", None) is None:
+                    raise RuntimeError("compute_S_line: global_x_grid not provided and slab.x_values not set. Call slab.global_x_grid(lines) first.")
+                global_x_grid = self.slab_in.x_values
+
+            ND = self.slab_in.ND
+            self.S_line = np.copy(self.B)
+
+            # ensure mu grid exists (use existing slab.NM if set, otherwise default 8)
+            N_mu = self.slab_in.NM if (self.slab_in.NM is not None) else 8
+            self.slab_in.mu_grid(N_mu, verbose=False, diffuse=True)
+
+            # Evaluate this line profile on the global x-grid and normalize using slab weights
+            self.compute_phi_x(global_x_grid)   # fills self.phi_x at global_x_grid points
+            if getattr(self.slab_in, "x_weights", None) is None:
+                dx = global_x_grid[1] - global_x_grid[0]
+                self.slab_in.x_weights = np.ones_like(global_x_grid) * dx
+            norm = np.sum(self.phi_x * self.slab_in.x_weights)
+            if norm != 0.0:
+                phi_global = self.phi_x / norm
+            else:
+                phi_global = self.phi_x.copy()
+
+            # Main Lambda Iteration loop (keeps structure but uses global grid & weights)
+            for iteration in range(max_iter):
+                J = np.zeros(ND)
+                for m in range(0, self.slab_in.NM):
+                    mu = self.slab_in.mu_values[m]
+                    w_mu = self.slab_in.mu_weights[m]
+                    for l in range(0, len(global_x_grid)):
+                        w_x = self.slab_in.x_weights[l]
+                        # use normalized phi on global grid and include line opacity factor self.k
+                        tau_lambda = self.slab_in.tau * (self.k * phi_global[l] + self.r)
+
+                        # Outwards
+                        I_lambda = sc_2nd_order(tau_lambda, self.S_line, mu, 0.0)
+                        J += I_lambda[0] * (0.5 * w_mu * phi_global[l] * w_x)
+
+                        # Inwards
+                        I_lambda = sc_2nd_order(tau_lambda, self.S_line, -mu, 0.0)
+                        J += I_lambda[0] * (0.5 * w_mu * phi_global[l] * w_x)
+
+                # update (basic Lambda iteration)
+                dS = self.epsilon * self.B + (1. - self.epsilon) * J - self.S_line
+                max_dS = np.max(np.abs(dS))
+                self.S_line += dS
+                if max_dS < tol:
+                    print(f"Convergence achieved after {iteration} iterations with max dS = {max_dS:.2e}")
+                    return
+            # if not converged, leave S_line as last estimate
+            print("compute_S_line: did not converge within max_iter")
+
 
     def compute_tau(self):
     # As the most robust method we will use log-spaced grid on both sides.
@@ -222,9 +276,6 @@ class Slab:
             line.global_x_values = self.x_values[idx]
             line.global_x_weights = self.x_weights[idx]
 
-            # Leave a placeholder for normalization computed later (after phi evaluated)
-            line.global_norm = None
-    
     def compute_phi(self, lines, correct_normalization=True, correction_extent=30.0):
         """Compute total line profile on global grid and normalize per-line profiles.
         
@@ -280,6 +331,7 @@ class Slab:
 
             # Add to total profile using the normalized per-line profile
             self.phi += line.k * line.phi_x_global  # contribution weighted by opacity ratio k
+        self.phi = self.phi / np.sum(self.phi * self.x_weights)
     
     def mu_grid(self, N_mu, verbose=False, diffuse=False):
         self.NM = N_mu
@@ -330,8 +382,8 @@ class Slab:
         """
         # Setup: build global x-grid and compute per-line profiles
         self.S = np.copy(self.B)
-        self.global_x_grid(lines)
-        self.compute_phi(lines)
+        self.global_x_grid(lines)  # Build global x grid and compute weights
+        self.compute_phi(lines, correct_normalization=True)
         
         I_emergent = np.zeros(len(self.x_values))
         
@@ -339,13 +391,43 @@ class Slab:
         for i in range(len(self.x_values)):
             # Accumulate total optical depth from all lines at this frequency
             tau_lambda = np.zeros_like(self.tau)
-            
+            # Build numerator/denominator for composite source S_nu(depth)
+            numer = np.zeros_like(self.tau)   # depth array
+            denom = 0.0                       # scalar (sum of k*phi at this nu)
+
             for line in lines:
-                # line.phi_x already evaluated on global x-grid in compute_phi
-                tau_lambda += self.tau * (line.phi_x[i] * line.k + line.r)
-            
-            # Solve radiative transfer for combined optical depth
-            I = sc_2nd_order(tau_lambda, self.S, mu, boundary_condition)
+                # pick normalized per-line profile on global grid
+                if hasattr(line, "phi_x_global"):
+                    phi_use = line.phi_x_global
+                else:
+                    phi_use = line.phi_x.copy()
+                    if getattr(self, "x_weights", None) is None:
+                        dx = self.x_values[1] - self.x_values[0]
+                        self.x_weights = np.ones_like(self.x_values) * dx
+                    norm = np.sum(phi_use * self.x_weights)
+                    if norm != 0.0:
+                        phi_use = phi_use / norm
+
+                # tau contribution (depth array)
+                tau_contrib = self.tau * (line.k * phi_use[i] + line.r)
+                tau_lambda += tau_contrib
+
+                # component contribution to composite source: k * phi(nu) * S_line(depth)
+                # require line.S_line to exist (line source per depth). fallback to B if missing.
+                S_comp = getattr(line, "S_line", None)
+                if S_comp is None:
+                    S_comp = self.B
+                numer += (line.k * phi_use[i]) * S_comp
+                denom += (line.k * phi_use[i])
+
+            # form composite S_nu(depth). if denom==0 fallback to slab B
+            if denom != 0.0:
+                S_nu = numer / denom
+            else:
+                S_nu = self.B
+
+            # Solve radiative transfer for combined optical depth using frequency-dependent S_nu
+            I = sc_2nd_order(tau_lambda, S_nu, mu, boundary_condition)
             I_emergent[i] = I[0, 0]  # Extract emergent intensity at top of slab (tau=0)
         
         self.I = I_emergent
@@ -367,13 +449,16 @@ if __name__ == "__main__":
     line1 = slab.Line(81, line_center=0.0, a=0.1, k=1.0, r=0.0, slab_in=slab)  # Example line, we will need to pass the slab instance to the line   
     line2 = slab.Line(81, line_center=3.2, a=0.25, k=8.0, r=0.0, slab_in=slab)  # Another example line
     lines = [line1, line2]  
+    slab.global_x_grid(lines)
+    line1.compute_S_line(max_iter=1000, tol=1e-6, global_x_grid=slab.x_values)
+    line2.compute_S_line(max_iter=1000, tol=1e-6, global_x_grid=slab.x_values)
     # Compute the source function for each line
     S = slab.formal_solution(lines, mu = 1.0, boundary_condition = 1.0)
     # Plot the intensity
     plt.figure(figsize=(10, 6))
-    plt.plot(S, label='Intensity')
+    plt.plot(slab.x_values, S, label='Intensity')
     plt.xlabel('x (Doppler widths)')
     plt.ylabel('Intensity')
     plt.title('Emergent Intensity vs xe')
     plt.grid()
-    plt.savefig('intensity_vs_x.png')
+    plt.savefig('intensity_vs_x'+str(time.time())+'.png')
