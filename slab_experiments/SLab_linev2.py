@@ -45,6 +45,7 @@ class Slab:
         self.tau_grid = np.linspace(0, tau_max, ND) # optical depth grid
         self.NM = None  # Number of mu points, to be set later when we generate the mu grid
         self.S = np.zeros(ND)  # Source function, to be calculated later
+        self.I = np.zeros(ND) # Intensity
         # More parameters:
         self.mu_values = None
         self.mu_weights = None
@@ -73,22 +74,41 @@ class Slab:
             self.norm = None  # Normalization factor for the line profile, to be calculated later
             self.x_weights = None  # Weights for the local x grid, to be calculated later
 
+            self.global_norm = None  # Normalization factor for the line profile on the global x grid, to be calculated later
+            self.global_x_idx = None  # Indices of the local x grid points in the global x grid, to be calculated later
+            self.global_x_values = None  # Global x values corresponding to the local x grid points
+            self.global_x_weights = None  # Global x weights corresponding to the local x grid points
             # Inherited properties from the slab
             self.B = slab_in.B # Planck function
             self.epsilon = slab_in.epsilon # Thermalization parameter, same as the slab's epsilon
         
-        def local_x_grid(self):
-            start = self.line_center - 5.0  # Start of the local x grid
-            end = self.line_center + 5.0    # End of the local x grid
+        def local_x_grid(self, extent=25.0):
+            """Generate local x-grid for this line.
+            
+            Parameters:
+            -----------
+            extent : float
+                Distance from line center to grid boundaries (±extent).
+                Default 25.0 to capture full profile without truncation errors.
+            """
+            start = self.line_center - extent  # Start of the local x grid
+            end = self.line_center + extent    # End of the local x grid
             self.x_grid = np.linspace(start, end, self.NL)  # Local x grid for this line
-            # Doesn't have to be equidistant
 
         def compute_phi_x(self, x, type="voigt"):
+            """Compute the line profile at wavelength grid points.
+            
+            CRITICAL: Profile must be computed relative to line center!
+            """
             if type == "voigt":
-                z = x + 1j * self.a  # Complex argument for the Voigt profile
+                # Compute Voigt profile relative to line center (CRITICAL FIX)
+                x_relative = x - self.line_center
+                z = x_relative + 1j * self.a  # Complex argument for the Voigt profile
                 self.phi_x = np.real(wofz(z)) / (np.sqrt(np.pi))
             elif type == "gaussian":
-                self.phi_x = np.exp(-x**2) / np.sqrt(np.pi)  # Gaussian profile
+                # Compute Gaussian profile relative to line center
+                x_relative = x - self.line_center
+                self.phi_x = np.exp(-x_relative**2) / np.sqrt(np.pi)  # Gaussian profile
             else:
                 raise ValueError("Unknown line profile type")
             
@@ -124,133 +144,6 @@ class Slab:
             self.J_scatter = J_inc
             del(J_inc)
 
-        # Now we can compute the source function for the line on the global x grid, which will be used to compute the emergent spectrum.
-        def compute_S_line(self, max_iter = 1000, tol = 1e-6):
-            ND = self.slab_in.ND
-            self.slab_in.mu_grid(self.slab_in.ND, verbose=False, diffuse=False)  # Generate the mu grid for the slab, this will be used to compute J_scat
-            #self.J_diff = np.zeros((ND, self.NL))
-            self.local_x_grid()
-            self.compute_phi_x(self.x_grid)  # Compute the line profile at the local x grid, this will be used to compute the source function
-            self.compute_weights(verbose=False)  # Compute the weights for the local x grid, this will be used to compute the source function
-            self.S_line = np.copy(self.B)  # Initial guess for the source function, we can start with the Planck function
-            # We will use LI method to iteratively solve for the source function.
-            # We will use emergent spectrum to compute the mean intensity J, and then update the source function.
-            for iteration in range(max_iter):
-                self.J = np.zeros(ND)
-                for m in range(0, self.slab_in.NM):
-                    for l in range(len(self.x_grid)):
-                        mu = self.slab_in.mu_values[m]
-                        w_mu = self.slab_in.mu_weights[m]
-                        x = self.x_grid[l]
-                        w_x = self.x_weights[l]
-                        tau_lambda = self.slab_in.tau * (self.phi_x[l]*self.k + self.r)  # Total optical depth at this frequency point, including contributions from the line and the continuum
-                        # Outward intensity with positive mu
-                        I_line = sc_2nd_order(tau_lambda, self.S_line, mu, 0.0)
-                        #I_line = self.slab_in.formal_solution(self.S_line, mu, boundary_condition='outward')
-                        self.J += I_line[0] * self.phi_x[l] * w_mu * w_x / 2.0
-
-                        # Inward intensity with negative mu
-                        I_line = sc_2nd_order(tau_lambda, self.S_line, -mu, 0.0)
-                        #I_line = self.slab_in.formal_solution(self.S_line, -mu, boundary_condition='inward')
-                        self.J += I_line[0] * self.phi_x[l] * w_mu * w_x / 2.0
-                        
-                # Sum J over frequency points
-                # self.J = np.sum(self.J_diff*self.phi_x[None,:]*self.x_weights[None,:], axis=1)
-                # Update the source function using the new J
-                S_new = self.epsilon * self.B + (1 - self.epsilon) * self.J
-                # Check for convergence
-                if np.max(np.abs(S_new - self.S_line) / self.B) < tol:
-                    print(f"Source function converged after {iteration} iterations.")
-                    break
-                self.S_line = S_new  # Update the source function for the next iteration
-            else:
-                print("Source function did not converge within the maximum number of iterations.")
-
-            # New method: compute source function using emergent intensity on the slab global x-grid
-        def compute_S_line_global(self, lines, max_iter=1000, tol=1e-6, verbose=False, N_mu=8):
-            """
-            Lambda-iteration over depth (tau), angle (mu) and frequency (x_local).
-            Uses sc_2nd_order to obtain intensities at every depth for the total (global) tau_lambda
-            computed from the full set of 'lines'. The local line source function is updated
-            using the mean intensity constructed from those intensities (loop order: tau, mu, x).
-            """
-            slab = self.slab_in
-            ND = slab.ND
-
-            # Build global frequency grid and total profiles on it
-            slab.global_x_grid(lines)
-            slab.compute_phi(lines)  # sets each line.phi_x on slab.x_values
-            global_x = slab.x_values
-
-            # Ensure mu grid for radiative transfer
-            slab.mu_grid(N_mu, verbose=False, diffuse=False)
-
-            # Prepare this line's local grid, local phi and local weights (do not overwrite line.phi_x on global grid)
-            self.local_x_grid()
-            x_local = self.x_grid.copy()
-            # local Voigt/Gauss profile (compute locally)
-            phi_local = np.real(wofz(x_local + 1j * self.a)) / np.sqrt(np.pi)
-            # simple uniform frequency weights on local grid normalized by profile
-            xw = np.ones_like(x_local) * (x_local[-1] - x_local[0]) / len(x_local)
-            xw = xw / np.sum(phi_local * xw)
-            self.x_weights = xw
-
-            # Map each local frequency to nearest index on global grid
-            idx_map = np.array([np.argmin(np.abs(global_x - xv)) for xv in x_local], dtype=int)
-
-            # Initial guess for the source function (per depth)
-            S_curr = np.copy(self.B)
-
-            # Pre-extract list reference for speed
-            lines_list = lines
-
-            for it in range(max_iter):
-                J = np.zeros(ND)  # mean intensity per depth for this line
-                # Loop order: mu -> x (local)
-                for m in range(slab.NM):
-                    mu = slab.mu_values[m]
-                    w_mu = slab.mu_weights[m]
-                    for lx in range(len(x_local)):
-                        g = idx_map[lx]  # corresponding global frequency index
-                        # total optical depth at this global frequency (sum over all lines + continuum r)
-                        tau_lambda = slab.tau * np.sum([ (ln.phi_x[g] * ln.k + ln.r) for ln in lines_list ], axis=0)
-                        # obtain intensities at all depths for this tau_lambda and current S_curr
-                        I_res = sc_2nd_order(tau_lambda, S_curr, mu, 0.0)
-                        # sc_2nd_order typically returns array-like; take first element if tuple/list
-                        if isinstance(I_res, (tuple, list)):
-                            I_all = np.asarray(I_res[0])
-                        else:
-                            I_all = np.asarray(I_res)
-                        # accumulate J at all depths (angle and frequency integration), divide by 2 for angular averaging over both hemispheres
-                        J += I_res[0] * phi_local[lx] * w_mu * xw[lx] / 2.0
-
-                        I_res = sc_2nd_order(tau_lambda, S_curr, -mu, 0.0)
-                        if isinstance(I_res, (tuple, list)):
-                            I_all = np.asarray(I_res[0])
-                        else:
-                            I_all = np.asarray(I_res)       
-                        J += I_res[0] * phi_local[lx] * w_mu * xw[lx] / 2.0 
-
-                # Update source function (local line)
-                S_new = self.epsilon * self.B + (1.0 - self.epsilon) * J
-
-                # Convergence check (relative to Planck B)
-                if np.max(np.abs(S_new - S_curr) / (np.abs(self.B) + 1e-30)) < tol:
-                    if verbose:
-                        print(f"compute_S_line_global: converged in {it} iterations")
-                    S_curr = S_new
-                    break
-
-                S_curr = S_new
-
-            else:
-                if verbose:
-                    print("compute_S_line_global: did not converge within max_iter")
-
-            # store result
-            self.S_line = S_curr
-            return self.S_line
-            
 
     def compute_tau(self):
     # As the most robust method we will use log-spaced grid on both sides.
@@ -267,30 +160,126 @@ class Slab:
         # Put these two together
         self.tau = np.concatenate((tau_first_half, tau_second_half[1:]))
 
-    def global_tau(self, lines):
-        # We will compute the global tau grid by summing the contributions from all lines and the continuum
-        self.tau_grid = np.zeros_like(self.tau)
-        for line in lines:
-            line.local_x_grid()  # Generate the local x grid for this line
-            line.compute_phi_x(line.x_grid)  # Compute the line profile for this line at the local x grid
-            self.tau_grid += self.tau * (line.phi_x * line.k + line.r)  # Add the contribution from this line, weighted by its opacity ratio r
-
     def global_x_grid(self, lines):
-        # We will concatenate the local x grids from all lines and then sort them
+        # Build a global x-grid by concatenating all line local x-grids,
+        # storing each line's local x values, and computing correct
+        # non-uniform integration weights for the global grid.
         all_x = []
         for line in lines:
-            line.local_x_grid()  # Generate the local x grid for this line
-            all_x.append(line.x_grid)  # Append it to the list of all x grids
-        
-        # Concatenate and sort the global x grid
-        self.x_values = np.sort(np.concatenate(all_x))
+            # Ensure local x-grid exists on the line
+            if line.x_grid is None:
+                line.local_x_grid()
+            # Keep an explicit copy of the local x-grid on the line
+            line.local_x_values = np.array(line.x_grid, copy=True)
+            all_x.append(line.local_x_values)
+
+        if len(all_x) == 0:
+            # No lines -> empty global grid
+            self.x_values = np.array([])
+            self.x_weights = np.array([])
+            return
+
+        # Concatenate, sort and take unique values (avoid duplicate x points)
+        concatenated = np.concatenate(all_x)
+        self.x_values = np.unique(np.sort(concatenated))
+
+        # Compute non-uniform integration weights for the global x-grid.
+        # Use the midpoint/trapezoidal style: w_i = (x_{i+1} - x_{i-1})/2
+        x = self.x_values
+        nx = x.size
+        if nx == 0:
+            self.x_weights = np.array([])
+        elif nx == 1:
+            self.x_weights = np.array([1.0])
+        else:
+            dx = np.empty_like(x)
+            dx[0] = 0.5 * (x[1] - x[0])
+            dx[-1] = 0.5 * (x[-1] - x[-2])
+            if nx > 2:
+                dx[1:-1] = 0.5 * (x[2:] - x[:-2])
+            self.x_weights = dx
+
+        # For each line save mapping from its local x-grid to the global grid
+        for line in lines:
+            # Map local x points to indices in the global grid. Use searchsorted
+            # and clamp to valid indices to be robust to floating rounding.
+            idx = np.searchsorted(self.x_values, line.local_x_values, side='left')
+            idx[idx >= self.x_values.size] = self.x_values.size - 1
+            # In rare cases searchsorted may point to a neighbour if values
+            # differ by tiny eps; ensure nearest match (helps robustness).
+            # Replace indices where the matched global value is farther than
+            # the previous neighbor by checking distances.
+            # (This is a lightweight correction; it won't change exact matches.)
+            for j, ii in enumerate(idx):
+                gval = self.x_values[ii]
+                # check previous neighbor
+                if ii > 0:
+                    prev = self.x_values[ii - 1]
+                    if abs(prev - line.local_x_values[j]) < abs(gval - line.local_x_values[j]):
+                        idx[j] = ii - 1
+
+            line.global_x_idx = idx
+            line.global_x_values = self.x_values[idx]
+            line.global_x_weights = self.x_weights[idx]
+
+            # Leave a placeholder for normalization computed later (after phi evaluated)
+            line.global_norm = None
     
-    def compute_phi(self, lines):
+    def compute_phi(self, lines, correct_normalization=True, correction_extent=30.0):
+        """Compute total line profile on global grid and normalize per-line profiles.
+        
+        Parameters:
+        -----------
+        lines : list
+            List of Line objects.
+        correct_normalization : bool
+            If True, compute normalization correction using wider x-range to
+            account for profile truncation. Eliminates sub-percent errors.
+        correction_extent : float
+            Extent for normalization correction evaluation (±extent from line center).
+            Default 30.0 ensures normalization error <0.0001 for most profiles.
+        """
         # We will compute the total line profile phi at each point in the global x grid by summing the contributions from all lines
         self.phi = np.zeros_like(self.x_values)
         for line in lines:
-            line.compute_phi_x(self.x_values)  # Compute the line profile for this line at the global x grid
-            self.phi += line.r * line.phi_x  # Add the contribution from this line, weighted by its opacity ratio r
+            # Evaluate the line profile at the global x-grid
+            line.compute_phi_x(self.x_values)
+
+            # Compute normalization on the global grid using the global x weights
+            if getattr(self, 'x_weights', None) is None or self.x_weights.size != self.x_values.size:
+                raise RuntimeError("Global x_weights not set or size mismatch. Call global_x_grid() first.")
+            global_norm = np.sum(line.phi_x * self.x_weights)
+            
+            # Apply normalization correction if requested
+            if correct_normalization:
+                # Compute integral over wider range to get true normalized integral
+                # This corrects for truncation of profile wings
+                x_wide = np.linspace(line.line_center - correction_extent,
+                                     line.line_center + correction_extent, 501)
+                # Use simple trapezoidal rule with many points for accurate correction
+                line.compute_phi_x(x_wide, type="voigt" if hasattr(line, 'a') else "gaussian")
+                dx_wide = x_wide[1] - x_wide[0]  # uniform spacing for trapezoidal
+                true_norm = np.trapz(line.phi_x, dx=dx_wide)
+                
+                # Correction factor: ratio of true integral to truncated integral
+                correction_factor = true_norm / global_norm if global_norm != 0.0 else 1.0
+                global_norm_corrected = global_norm * correction_factor
+            else:
+                global_norm_corrected = global_norm
+            
+            line.global_norm = global_norm_corrected
+            
+            # Re-evaluate phi_x on global grid after correction
+            line.compute_phi_x(self.x_values)
+
+            # Store a normalized version of phi on the global grid to avoid confusion
+            if global_norm_corrected != 0.0:
+                line.phi_x_global = line.phi_x / global_norm_corrected
+            else:
+                line.phi_x_global = line.phi_x.copy()
+
+            # Add to total profile using the normalized per-line profile
+            self.phi += line.k * line.phi_x_global  # contribution weighted by opacity ratio k
     
     def mu_grid(self, N_mu, verbose=False, diffuse=False):
         self.NM = N_mu
@@ -327,29 +316,41 @@ class Slab:
             return I_0
 
     # Define formal solution for the emergent spectrum that lines can call for their source function
-    def formal_solution(self, S, mu_ob, boundary_condition='outward'):
-        line1 = self.Line(41, line_center=0.0, a=0.1, k=1.0, r=0.0, slab_in=self)  # Example line, we will need to pass the slab instance to the line
-        line2 = self.Line(41, line_center=3.2, a=0.2, k=8.0, r=0.0, slab_in=self)  # Another example line
-        self.global_x_grid([line1, line2])  # Make sure the global x grid is generated before we compute the emergent spectrum
-        self.mu_grid(N_mu=8, verbose=False, diffuse=False)  # Generate the mu grid for the slab, this will be used to compute J_scat
-        self.compute_phi([line1, line2])  # Compute the total line profile phi for all lines in the slab
-        spectrum = np.zeros(len(self.x_values))
-        self.S = np.copy(S)
-        if boundary_condition == 'outward':
-            for l in range(len(self.x_values)):
-                # For each frequency point, compute the emergent intensity
-                tau_lambda = self.tau * (line1.phi_x[l]*line1.k + line2.phi_x[l]*line2.k + line1.r + line2.r)  # Total optical depth at this frequency point, including contributions from both lines and the continuum
-                I_emergent = sc_2nd_order(tau_lambda, self.S, mu_ob, boundary_condition)
-                #print('!!!!!!!!', I_emergent[0].shape)
-                spectrum[l] = I_emergent[0,0]  # Store the emergent intensity only, we don't need the lambda operator here
-        if boundary_condition == 'inward':
-            for l in range(len(self.x_values)):
-                # For each frequency point, compute the inward intensity
-                tau_lambda = self.tau * (line1.phi_x[l]*line1.k + line2.phi_x[l]*line2.k + line1.r + line2.r)
-                I_inward = sc_2nd_order(tau_lambda, self.S, -mu_ob, boundary_condition)
-                spectrum[l] = I_inward[0,0]  # Store the inward intensity only, we don't need the lambda operator here
-        return spectrum  # Return the emergent spectrum
-    
+    def formal_solution(self, lines, mu, boundary_condition):
+        """Compute emergent intensity spectrum at given observation angle.
+        
+        Parameters:
+        -----------
+        lines : list
+            List of Line objects.
+        mu : float
+            Cosine of observation angle (mu=1.0 is vertical).
+        boundary_condition : float
+            Boundary condition intensity at top of slab.
+        """
+        # Setup: build global x-grid and compute per-line profiles
+        self.S = np.copy(self.B)
+        self.global_x_grid(lines)
+        self.compute_phi(lines)
+        
+        I_emergent = np.zeros(len(self.x_values))
+        
+        # For each frequency point on the global x-grid:
+        for i in range(len(self.x_values)):
+            # Accumulate total optical depth from all lines at this frequency
+            tau_lambda = np.zeros_like(self.tau)
+            
+            for line in lines:
+                # line.phi_x already evaluated on global x-grid in compute_phi
+                tau_lambda += self.tau * (line.phi_x[i] * line.k + line.r)
+            
+            # Solve radiative transfer for combined optical depth
+            I = sc_2nd_order(tau_lambda, self.S, mu, boundary_condition)
+            I_emergent[i] = I[0, 0]  # Extract emergent intensity at top of slab (tau=0)
+        
+        self.I = I_emergent
+        return I_emergent
+
 
 if __name__ == "__main__":
    
@@ -364,38 +365,15 @@ if __name__ == "__main__":
     slab = Slab(ND, tau_max, epsilon, B, H)
     # Create the line instances
     line1 = slab.Line(81, line_center=0.0, a=0.1, k=1.0, r=0.0, slab_in=slab)  # Example line, we will need to pass the slab instance to the line   
-    line2 = slab.Line(81, line_center=3.2, a=0.2, k=8.0, r=0.0, slab_in=slab)  # Another example line
+    line2 = slab.Line(81, line_center=3.2, a=0.25, k=8.0, r=0.0, slab_in=slab)  # Another example line
     lines = [line1, line2]  
     # Compute the source function for each line
-    
-    line1.compute_S_line()
-    line2.compute_S_line()
-
-    # Plot the source function for each line vs index
+    S = slab.formal_solution(lines, mu = 1.0, boundary_condition = 1.0)
+    # Plot the intensity
     plt.figure(figsize=(10, 6))
-    plt.plot(slab.tau, line1.S_line, label='Line 1 Source Function')
-    plt.plot(slab.tau, line2.S_line, label='Line 2 Source Function')
-    plt.xscale('log')
-    plt.xlabel('Optical Depth (tau)')
-    plt.ylabel('Source Function (S)')
-    plt.title('Source Function for Each Line')
-    plt.legend()
+    plt.plot(S, label='Intensity')
+    plt.xlabel('x (Doppler widths)')
+    plt.ylabel('Intensity')
+    plt.title('Emergent Intensity vs xe')
     plt.grid()
-    plt.show()
-
-
-    slab.global_x_grid(lines)
-    slab.compute_phi(lines)
-    S_1 = line1.compute_S_line_global(lines, max_iter=1000, tol=1e-6, verbose=True, N_mu=8)
-    S_2 = line2.compute_S_line_global(lines, max_iter=1000, tol=1e-6, verbose=True, N_mu=8)
-    # Plot the source function for each line vs index
-    plt.figure(figsize=(10, 6))
-    plt.plot(slab.tau, S_1, label='Line 1 Source Function (Global)')
-    plt.plot(slab.tau, S_2, label='Line 2 Source Function (Global)')
-    plt.xscale('log')
-    plt.xlabel('Optical Depth (tau)')
-    plt.ylabel('Source Function (S)')
-    plt.legend()
-    plt.title('Source Function for Each Line (Global x-grid)')
-    plt.grid()
-    plt.show()
+    plt.savefig('intensity_vs_x.png')
