@@ -170,8 +170,10 @@ class Slab:
                 phi_global = self.phi_x.copy()
 
             # Main Lambda Iteration loop (keeps structure but uses global grid & weights)
+            # Let's try ALO
             for iteration in tqdm(range(max_iter)):
                 J = np.zeros(ND)
+                L = np.zeros(ND) # Lambda operator
                 for m in range(0, self.slab_in.NM):
                     mu = self.slab_in.mu_values[m]
                     w_mu = self.slab_in.mu_weights[m]
@@ -183,13 +185,15 @@ class Slab:
                         # Outwards
                         I_lambda = sc_2nd_order(tau_lambda, self.S_line, mu, 0.0)
                         J += I_lambda[0] * (0.5 * w_mu * phi_global[l] * w_x)
+                        L += I_lambda[1] * (0.5 * w_mu * phi_global[l] * w_x)
 
                         # Inwards
                         I_lambda = sc_2nd_order(tau_lambda, self.S_line, -mu, 0.0)
                         J += I_lambda[0] * (0.5 * w_mu * phi_global[l] * w_x)
+                        L += I_lambda[1] * (0.5 * w_mu * phi_global[l] * w_x)
 
                 # update (basic Lambda iteration)
-                dS = self.epsilon * self.B + (1. - self.epsilon) * J - self.S_line
+                dS = (self.epsilon * self.B + (1. - self.epsilon) * J - self.S_line)/ (1.0 - (1.0 - self.epsilon) * L)
                 max_dS = np.max(np.abs(dS))
                 self.S_line += dS
                 if max_dS < tol:
@@ -488,12 +492,12 @@ if __name__ == "__main__":
     # Create the line instances
     line1 = slab.Line(81, line_center=0.0, a=0.1, k=1.0, r=0.0, slab_in=slab)  # Example line, we will need to pass the slab instance to the line   
     line2 = slab.Line(81, line_center=3.2, a=0.2, k=8.0, r=0.0, slab_in=slab)  # Another example line
-    line3 = slab.Line(81, line_center=8.5, a= 0.5, k=3.0, r=0.0, slab_in=slab)
-    lines = [line1, line2, line3]
+    #line3 = slab.Line(81, line_center=8.5, a= 0.5, k=3.0, r=0.0, slab_in=slab)
+    lines = [line1, line2]
     slab.global_x_grid(lines)
     line1.compute_S_line(max_iter=2000, tol=1e-6, global_x_grid=slab.x_values)
     line2.compute_S_line(max_iter=2000, tol=1e-6, global_x_grid=slab.x_values)
-    line3.compute_S_line(max_iter=2000, tol=1e-6, global_x_grid=slab.x_values)
+    #line3.compute_S_line(max_iter=2000, tol=1e-6, global_x_grid=slab.x_values)
     # Compute the source function for each line
     S = slab.formal_solution(lines, mu = 1.0, boundary_condition = 1.0)
     # Plot the intensity
@@ -512,9 +516,10 @@ if __name__ == "__main__":
     plt.figure(figsize=(10, 6))
     for line in lines:
         if hasattr(line, "S_line"):
-            plt.plot(slab.tau, line.S_line, label=f'Line at x={line.line_center}')
+            plt.semilogy(np.log10(slab.tau), line.S_line, label=f'Line at x={line.line_center}')
     composite_S = slab.composite_S(lines)
-    plt.plot(slab.tau, composite_S[:, slab.x_values.size//2], label='Composite S at line center', linestyle='--')
+    plt.semilogy(np.log10(slab.tau), composite_S[:, slab.x_values.size//2], label='Composite S at line center', linestyle='--')
+    plt.semilogy(np.log10(slab.tau), slab.B, ':k', label = 'Planck B')
     plt.xlabel('Optical Depth (tau)')
     plt.ylabel('Source Function')
     plt.title('Source Function vs Optical Depth')
