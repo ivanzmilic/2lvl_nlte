@@ -509,7 +509,7 @@ if __name__ == "__main__":
     plt.ylabel('Intensity')
     plt.title('Emergent Intensity vs xe')
     plt.grid()
-    plt.savefig('intensity_vs_x'+str(time.time())+'.png')
+    plt.savefig('intensity_vs_x_k1_'+str(line1.k)+'_k2_'+str(line2.k)+'.png')
 
 
     # Plot the source function of each line and composite source function
@@ -526,7 +526,7 @@ if __name__ == "__main__":
     plt.xscale('log')
     plt.grid()
     plt.legend()
-    plt.savefig('source_function_vs_tau'+str(time.time())+'.png')
+    plt.savefig('source_function_vs_tau_k1_'+str(line1.k)+'_k2_'+str(line2.k)+'.png')
 
 
     # Build composite source function grid (depth x frequency)
@@ -685,6 +685,19 @@ if __name__ == "__main__":
             # overlay a thicker mean contribution curve for visibility
             mean_curve = np.mean(contrib[depths_all, :], axis=0)
             plt.plot(x, mean_curve, color=color, lw=1.5, alpha=0.9, label=f'Line @{lines[idx].line_center} contribution (avg depths)')
+
+            # find depth where this line contributes the most (integrated over x with weights)
+            if getattr(slab, "x_weights", None) is None:
+                dx = x[1] - x[0]
+                xw = np.ones_like(x) * dx
+            else:
+                xw = slab.x_weights
+            # total fractional contribution per depth (weighted integral over x)
+            total_per_depth = np.sum(contrib * xw[None, :], axis=1)
+            depth_max = int(np.argmax(total_per_depth))
+            # plot the contribution curve at that depth as a thick line
+            plt.plot(x, contrib[depth_max, :], color=color, lw=2.5, alpha=1.0, linestyle = "--",
+                     label=f'Line @{lines[idx].line_center} peak depth idx={depth_max}, tau={slab.tau[depth_max]:.2g}')
 
         # overlay composite S (choose mid depth) as dashed black curve for comparison
         mid = slab.ND // 2
