@@ -479,6 +479,150 @@ class Slab:
 
         return S_nu_grid
 
+
+    def iterate_coupled_lines(self, lines, max_iter=40, tol=1e-4, verbose=False, omega=1.0):
+        """
+        Iterate lines and slab consistently so lines "see" each other through the slab intensity.
+
+        Algorithm (per outer iteration):
+        - Ensure a common global x-grid and per-line normalized profiles exist.
+        - Build current composite S_nu(depth) from line.S_line (fallback to B).
+        - For all mu and frequency points solve formal RT once per (mu,nu) using composite S_nu to get I(depth,mu,nu).
+        - For each line j accumulate J_j(depth) = 0.5 * sum_mu sum_n w_mu w_x phi_j(nu) * I(depth,mu,nu).
+        - Update each line.S_line using ALI (diagonal lambda operator) if available, otherwise simple LI:
+            S_new = [epsilon B + (1-epsilon) * J_nonlocal] / [1 - (1-epsilon) * Lambda_star]
+          where J_nonlocal = J - Lambda_star * S_old.
+        - Recompute composite S_nu and repeat until convergence.
+
+        Returns dict with final composite S_nu grid, emergent intensity, per-line S_line, and rel history.
+        """
+        # prepare global grid & per-line normalized profiles
+        self.global_x_grid(lines)
+        self.compute_phi(lines, correct_normalization=False)
+        # ensure x_weights present
+        if getattr(self, "x_weights", None) is None or self.x_weights.size != self.x_values.size:
+            dx = self.x_values[1] - self.x_values[0]
+            self.x_weights = np.ones_like(self.x_values) * dx
+
+        # ensure mu grid exists
+        if getattr(self, "mu_values", None) is None or getattr(self, "mu_weights", None) is None:
+            self.mu_grid(self.NM if self.NM is not None else 8, verbose=False, diffuse=True)
+
+        Nfreq = len(self.x_values)
+        ND = len(self.tau)
+        Nmu = len(self.mu_values)
+
+        # Ensure each line has phi_x_global and initialize S_line if missing
+        for line in lines:
+            if not hasattr(line, "phi_x_global"):
+                line.compute_phi_x(self.x_values)
+                norm = np.sum(line.phi_x * self.x_weights)
+                line.phi_x_global = line.phi_x / norm if norm != 0.0 else line.phi_x.copy()
+            if getattr(line, "S_line", None) is None:
+                line.S_line = np.copy(self.B)
+
+        # Precompute diagonal (monochromatic) Lambda_star for each line to accelerate ALI update
+        Lambda_stars = []
+        for line in lines:
+            try:
+                Lambda_star = calc_lambda_monoc(self.tau, self.mu_values, self.mu_weights,
+                                                line.phi_x_global, self.x_weights)
+            except Exception:
+                # fallback: small constant to avoid denom=0
+                Lambda_star = np.zeros_like(self.tau)
+            Lambda_stars.append(Lambda_star)
+
+        rel_history = []
+        for outer in tqdm(range(max_iter)):
+            # build current composite S_nu on global grid (depth x freq)
+            S_nu = self.composite_S(lines)  # uses current line.S_line internally
+
+            # allocate J arrays per line (depth)
+            J_lines = [np.zeros(ND) for _ in lines]
+
+            # Loop over angles and frequencies once, using composite S_nu for formal solution
+            for m in range(Nmu):
+                mu = self.mu_values[m]
+                w_mu = self.mu_weights[m]
+                for l in range(Nfreq):
+                    w_x = self.x_weights[l]
+                    # total opacity at this freq: sum over lines (k*phi + r)
+                    tau_lambda = np.zeros_like(self.tau)
+                    for line in lines:
+                        phi_l = line.phi_x_global[l]
+                        tau_lambda += self.tau * (line.k * phi_l + line.r)
+
+                    # formal solution for this (mu,nu) with frequency-dependent S_nu[:,l]
+                    # include both outward and inward rays so lines see the correct illumination
+                    # outward ray (from bottom, bottom boundary assumed zero)
+                    I_out = sc_2nd_order(tau_lambda, S_nu[:, l], mu, 0.0)
+                    I_out_depth = I_out[0]
+                    # inward ray (from top) uses actual top illumination
+                    top_bc = self.get_boundary_radiation(mu)
+                    I_in = sc_2nd_order(tau_lambda, S_nu[:, l], -mu, 0.0)
+                    I_in_depth = I_in[0]
+
+                    # sum contributions from both directions
+                    I_depth_sum = I_out_depth + I_in_depth
+
+                    # accumulate J for each line using its phi at this frequency (use 1/2 when summing ±μ)
+                    for j, line in enumerate(lines):
+                        phi_j = line.phi_x_global[l]
+                        J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_depth_sum
+
+            # Now update each line's S_line using ALI / diagonal ALO if possible
+            max_rel = 0.0
+            for j, line in enumerate(lines):
+                Lambda_star = Lambda_stars[j]
+                J = J_lines[j]
+                S_old = line.S_line
+
+                # J_nonlocal = J - Lambda_star * S_old
+                J_nonlocal = J - Lambda_star * S_old
+
+                denom = 1.0 - (1.0 - line.epsilon) * Lambda_star
+                # protect denom
+                tiny = 1e-12
+                denom = np.where(np.abs(denom) < tiny, np.sign(denom) * tiny + tiny, denom)
+
+                S_new = (line.epsilon * line.B + (1.0 - line.epsilon) * J_nonlocal) / denom
+
+                # under-relaxation
+                S_updated = S_old + omega * (S_new - S_old)
+                # measure relative change
+                rel = np.max(np.abs((S_updated - S_old) / np.where(np.abs(S_updated) > tiny, S_updated, tiny)))
+                max_rel = max(max_rel, rel)
+
+                # store update
+                line.S_line = S_updated
+
+            rel_history.append(max_rel)
+            if verbose:
+                print(f"iterate_coupled_lines iter {outer:3d} max_rel={max_rel:.3e}")
+
+            # update composite S and emergent intensity for diagnostics / next iteration
+            S_nu = self.composite_S(lines)
+            I_emergent = self.formal_solution(lines, mu=1.0, boundary_condition=1.0)
+
+            # check convergence
+            if max_rel < tol:
+                if verbose:
+                    print(f"iterate_coupled_lines converged after {outer} iterations (rel={max_rel:.3e})")
+                break
+        else:
+            if verbose:
+                print("iterate_coupled_lines: did not converge within max_iter")
+
+        # final outputs
+        final_S_nu = self.composite_S(lines)
+        final_I = self.formal_solution(lines, mu=1.0, boundary_condition=0.0)
+        return {
+            "S_nu": final_S_nu,
+            "I_emergent": final_I,
+            "S_lines": [line.S_line.copy() for line in lines],
+            "rel_history": np.array(rel_history)
+        }
+
 if __name__ == "__main__":
     # Define the input parameters
     ND = 81
