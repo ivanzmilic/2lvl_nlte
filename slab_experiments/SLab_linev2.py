@@ -46,6 +46,7 @@ class Slab:
         self.NM = None  # Number of mu points, to be set later when we generate the mu grid
         self.S = np.zeros(ND)  # Source function, to be calculated later
         self.I = np.zeros(ND) # Intensity
+        self.r = 0.0
         # More parameters:
         self.mu_values = None
         self.mu_weights = None
@@ -55,11 +56,10 @@ class Slab:
         self.compute_tau()  # Compute the tau grid, this function can also be used externally
 
     class Line:
-        def __init__(self, NL, line_center, a, k, r, slab_in):
+        def __init__(self, NL, line_center, a, k, slab_in):
             self.line_center = line_center
             self.a = a # Damping parameter
             self.k = k # Ratio of the second line to the first line
-            self.r = r # Ratio of the line opacity to the continuum opacity at line center
             self.slab_in = slab_in # Reference to the slab instance, so that we can access the slab's properties
             #self.tau_0 = tau_0  # Optical depth at line center
             self.x_grid = None  # Local x grid for this line
@@ -180,7 +180,7 @@ class Slab:
                     for l in range(0, len(global_x_grid)):
                         w_x = self.slab_in.x_weights[l]
                         # use normalized phi on global grid and include line opacity factor self.k
-                        tau_lambda = self.slab_in.tau * (self.k * phi_global[l] + self.r)
+                        tau_lambda = self.slab_in.tau * (self.k * phi_global[l] + self.slab_in.r)
 
                         # Outwards
                         I_lambda = sc_2nd_order(tau_lambda, self.S_line, mu, 0.0)
@@ -381,8 +381,8 @@ class Slab:
             List of Line objects.
         mu : float
             Cosine of observation angle (mu=1.0 is vertical).
-        boundary_condition : float
-            Boundary condition intensity at top of slab.
+        boundary_condition : float or array
+            Boundary condition intensity at top of slab. If float, same for all frequencies; if array, per frequency.
         """
         # Setup: build global x-grid and compute per-line profiles
         self.S = np.copy(self.B)
@@ -390,6 +390,14 @@ class Slab:
         self.compute_phi(lines, correct_normalization=False)
         
         I_emergent = np.zeros(len(self.x_values))
+        
+        # Handle boundary_condition
+        if np.isscalar(boundary_condition):
+            bc = np.full(len(self.x_values), boundary_condition)
+        else:
+            bc = np.asarray(boundary_condition)
+            if bc.shape != (len(self.x_values),):
+                raise ValueError("boundary_condition array must match x_values length")
         
         # For each frequency point on the global x-grid:
         for i in range(len(self.x_values)):
@@ -413,7 +421,7 @@ class Slab:
                         phi_use = phi_use / norm
 
                 # tau contribution (depth array)
-                tau_contrib = self.tau * (line.k * phi_use[i] + line.r)
+                tau_contrib = self.tau * (line.k * phi_use[i] + self.r)
                 tau_lambda += tau_contrib
 
                 # component contribution to composite source: k * phi(nu) * S_line(depth)
@@ -431,7 +439,7 @@ class Slab:
                 S_nu = self.B
 
             # Solve radiative transfer for combined optical depth using frequency-dependent S_nu
-            I = sc_2nd_order(tau_lambda, S_nu, mu, boundary_condition)
+            I = sc_2nd_order(tau_lambda, S_nu, mu, bc[i])
             I_emergent[i] = I[0, 0]  # Extract emergent intensity at top of slab (tau=0)
         
         self.I = I_emergent
@@ -479,6 +487,21 @@ class Slab:
 
         return S_nu_grid
 
+
+    def see_source_function(self, lines, slab_intensity):
+        """Update source functions for all lines using current slab intensity, then update slab intensity.
+        
+        Parameters:
+        -----------
+        lines : list
+            List of Line objects.
+        slab_intensity : array
+            Current emergent intensity spectrum of the slab on global x-grid.
+        """
+        for line in lines:
+            line.compute_S_line(max_iter=1000, tol=1e-6, global_x_grid=self.x_values, boundary_condition=1.0)
+        # Update slab intensity using the new S_line of each line
+        self.I = self.formal_solution(lines, mu=1.0, boundary_condition=1.0)
 
     def iterate_coupled_lines(self, lines, max_iter=40, tol=1e-4, verbose=False, omega=1.0):
         """
@@ -550,7 +573,7 @@ class Slab:
                     tau_lambda = np.zeros_like(self.tau)
                     for line in lines:
                         phi_l = line.phi_x_global[l]
-                        tau_lambda += self.tau * (line.k * phi_l + line.r)
+                        tau_lambda += self.tau * (line.k * phi_l + self.r)
 
                     # formal solution for this (mu,nu) with frequency-dependent S_nu[:,l]
                     # include both outward and inward rays so lines see the correct illumination
@@ -572,20 +595,14 @@ class Slab:
 
             # Now update each line's S_line using ALI / diagonal ALO if possible
             max_rel = 0.0
+            tiny = 1e-20  # small threshold to avoid division by zero
             for j, line in enumerate(lines):
                 Lambda_star = Lambda_stars[j]
                 J = J_lines[j]
                 S_old = line.S_line
 
-                # J_nonlocal = J - Lambda_star * S_old
-                J_nonlocal = J - Lambda_star * S_old
-
-                denom = 1.0 - (1.0 - line.epsilon) * Lambda_star
-                # protect denom
-                tiny = 1e-12
-                denom = np.where(np.abs(denom) < tiny, np.sign(denom) * tiny + tiny, denom)
-
-                S_new = (line.epsilon * line.B + (1.0 - line.epsilon) * J_nonlocal) / denom
+                # Simple LI update instead of ALI
+                S_new = line.epsilon * line.B + (1.0 - line.epsilon) * J
 
                 # under-relaxation
                 S_updated = S_old + omega * (S_new - S_old)
@@ -615,7 +632,7 @@ class Slab:
 
         # final outputs
         final_S_nu = self.composite_S(lines)
-        final_I = self.formal_solution(lines, mu=1.0, boundary_condition=0.0)
+        final_I = self.formal_solution(lines, mu=1.0, boundary_condition=1.0)
         return {
             "S_nu": final_S_nu,
             "I_emergent": final_I,
@@ -634,9 +651,9 @@ if __name__ == "__main__":
     # Create the slab instance
     slab = Slab(ND, tau_max, epsilon, B, H)
     # Create the line instances
-    line1 = slab.Line(81, line_center=0.0, a=0.1, k=1.0, r=0.0, slab_in=slab)  # Example line, we will need to pass the slab instance to the line   
-    line2 = slab.Line(81, line_center=3.2, a=0.2, k=8.0, r=0.0, slab_in=slab)  # Another example line
-    #line3 = slab.Line(81, line_center=8.5, a= 0.5, k=3.0, r=0.0, slab_in=slab)
+    line1 = slab.Line(81, line_center=0.0, a=0.1, k=1.0, slab_in=slab)  # Example line, we will need to pass the slab instance to the line   
+    line2 = slab.Line(81, line_center=3.2, a=0.2, k=8.0, slab_in=slab)  # Another example line
+    #line3 = slab.Line(81, line_center=8.5, a= 0.5, k=3.0, slab_in=slab)
     lines = [line1, line2]
     slab.global_x_grid(lines)
     line1.compute_S_line(max_iter=2000, tol=1e-6, global_x_grid=slab.x_values)
@@ -734,6 +751,19 @@ if __name__ == "__main__":
             plt.tight_layout()
             plt.savefig(f'line_{i+1}_S_vs_tau.png', dpi=150)
             plt.close()
+
+        # Emergent intensity spectrum
+        plt.figure(figsize=(8,5))
+        plt.plot(x, I_emergent, label='Emergent Intensity')
+        plt.plot(x, np.mean(B) * np.ones_like(x), ':k', label='Planck B (mean)')
+        plt.xlabel('x (Doppler units)')
+        plt.ylabel('Intensity')
+        plt.title('Emergent Intensity Spectrum')
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig('emergent_intensity_vs_x.png', dpi=150)
+        plt.close()
 
         # 2) Composite source: S_nu vs x for selected depths, with Planck B
         plt.figure(figsize=(8,5))
@@ -849,7 +879,7 @@ if __name__ == "__main__":
         # overlay Planck B reference (mean)
         plt.plot(x, np.mean(B) * np.ones_like(x), ':k', label='Planck B (mean)')
         plt.xlabel('x (Doppler units)')
-        plt.ylabel('Per-line contribution to composite S')
+        plt.ylabel('Source function')
         plt.title('Per-line contributions vs x (all depths overlay; avg & mid shown)')
         plt.legend()
         plt.grid(True)
@@ -859,3 +889,18 @@ if __name__ == "__main__":
 
         print("Saved plots: per-line emissivity, S_vs_tau, composite S vs x/tau, combined contribution heatmap, and per-line contributions (all depths).")
     plot_line_and_composite(lines, slab, S_nu_grid, I_emergent)
+
+    # 20. 02. 2026.
+    # Svaka linija treba da ima posebnu normu za phi koja ulazi u njen J (ne mora normirati na globalu)
+    # Linije komuniciraju medjusobno kroz intenzitet slaba
+    # tau grid slaba neka uzme centar prve linije
+    # Lambda iteracija treba da koristi slab intenzitet, koji ce se menjati u zavisnosti od S_line svake linije, a ne samo B
+    # tau_lambda je tau * (k*phi + r)
+    # r je svojstvo slaba, ne linije 
+    # Procedura treba da bude veca: 
+    # 1) Linija vidi intenzitet slaba
+    # 2) Linija racuna svoj J koristeci taj intenzitet i svoju phi (koja je normirana na lokalnom x-gridu)
+    # 3) Linija update-uje svoj S_line koristeci J
+    # 4) Slab update-uje svoj intenzitet koristeci S_line svih linija (ukupna funkcija izvora)
+    # 5) Sanity check: posle prve iteracije funkcija izvora treba da bude <= B
+    # 6) 
