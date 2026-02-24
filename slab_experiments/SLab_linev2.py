@@ -188,7 +188,9 @@ class Slab:
                         L += I_lambda[1] * (0.5 * w_mu * phi_global[l] * w_x)
 
                         # Inwards
-                        I_lambda = sc_2nd_order(tau_lambda, self.S_line, -mu, 0.0)
+                        # use top-side illumination for inward ray
+                        top_bc = self.slab_in.get_boundary_radiation(mu)
+                        I_lambda = sc_2nd_order(tau_lambda, self.S_line, -mu, top_bc)
                         J += I_lambda[0] * (0.5 * w_mu * phi_global[l] * w_x)
                         L += I_lambda[1] * (0.5 * w_mu * phi_global[l] * w_x)
 
@@ -582,7 +584,7 @@ class Slab:
                     I_out_depth = I_out[0]
                     # inward ray (from top) uses actual top illumination
                     top_bc = self.get_boundary_radiation(mu)
-                    I_in = sc_2nd_order(tau_lambda, S_nu[:, l], -mu, 0.0)
+                    I_in = sc_2nd_order(tau_lambda, S_nu[:, l], -mu, top_bc)
                     I_in_depth = I_in[0]
 
                     # sum contributions from both directions
