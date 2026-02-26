@@ -190,7 +190,7 @@ class Slab:
                         # Inwards
                         # use top-side illumination for inward ray
                         top_bc = self.slab_in.get_boundary_radiation(mu)
-                        I_lambda = sc_2nd_order(tau_lambda, self.S_line, -mu, top_bc)
+                        I_lambda = sc_2nd_order(tau_lambda, self.S_line, -mu, 0.0)
                         J += I_lambda[0] * (0.5 * w_mu * phi_global[l] * w_x)
                         L += I_lambda[1] * (0.5 * w_mu * phi_global[l] * w_x)
 
@@ -546,16 +546,7 @@ class Slab:
             if getattr(line, "S_line", None) is None:
                 line.S_line = np.copy(self.B)
 
-        # Precompute diagonal (monochromatic) Lambda_star for each line to accelerate ALI update
-        Lambda_stars = []
-        for line in lines:
-            try:
-                Lambda_star = calc_lambda_monoc(self.tau, self.mu_values, self.mu_weights,
-                                                line.phi_x_global, self.x_weights)
-            except Exception:
-                # fallback: small constant to avoid denom=0
-                Lambda_star = np.zeros_like(self.tau)
-            Lambda_stars.append(Lambda_star)
+        # Using simple Lambda iteration only: no precomputed Lambda_star or ALI acceleration.
 
         rel_history = []
         for outer in tqdm(range(max_iter)):
@@ -576,7 +567,6 @@ class Slab:
                     for line in lines:
                         phi_l = line.phi_x_global[l]
                         tau_lambda += self.tau * (line.k * phi_l + self.r)
-
                     # formal solution for this (mu,nu) with frequency-dependent S_nu[:,l]
                     # include both outward and inward rays so lines see the correct illumination
                     # outward ray (from bottom, bottom boundary assumed zero)
@@ -584,7 +574,7 @@ class Slab:
                     I_out_depth = I_out[0]
                     # inward ray (from top) uses actual top illumination
                     top_bc = self.get_boundary_radiation(mu)
-                    I_in = sc_2nd_order(tau_lambda, S_nu[:, l], -mu, top_bc)
+                    I_in = sc_2nd_order(tau_lambda, S_nu[:, l], -mu, 0.0)
                     I_in_depth = I_in[0]
 
                     # sum contributions from both directions
@@ -594,12 +584,10 @@ class Slab:
                     for j, line in enumerate(lines):
                         phi_j = line.phi_x_global[l]
                         J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_depth_sum
-
             # Now update each line's S_line using ALI / diagonal ALO if possible
             max_rel = 0.0
             tiny = 1e-20  # small threshold to avoid division by zero
             for j, line in enumerate(lines):
-                Lambda_star = Lambda_stars[j]
                 J = J_lines[j]
                 S_old = line.S_line
 
@@ -621,7 +609,7 @@ class Slab:
 
             # update composite S and emergent intensity for diagnostics / next iteration
             S_nu = self.composite_S(lines)
-            I_emergent = self.formal_solution(lines, mu=1.0, boundary_condition=1.0)
+            I_emergent = self.formal_solution(lines, mu=1.0, boundary_condition=0.0)
 
             # check convergence
             if max_rel < tol:
@@ -634,13 +622,254 @@ class Slab:
 
         # final outputs
         final_S_nu = self.composite_S(lines)
-        final_I = self.formal_solution(lines, mu=1.0, boundary_condition=1.0)
+        final_I = self.formal_solution(lines, mu=1.0, boundary_condition=0.0)
         return {
             "S_nu": final_S_nu,
             "I_emergent": final_I,
             "S_lines": [line.S_line.copy() for line in lines],
             "rel_history": np.array(rel_history)
         }
+
+
+def plot_help(slab, lines, result=None, max_iter=2000, tol=1e-6, save_prefix='', show=True):
+    """Produce the standard set of diagnostic plots (same as the notebook cell):
+    - emergent spectrum
+    - composite S_nu heatmap
+    - per-line S_line vs tau
+    - convergence history
+    - per-line contribution stackplot at mid depth
+
+    Parameters
+    ----------
+    slab : Slab
+        Slab instance
+    lines : list
+        List of Line instances
+    result : dict, optional
+        Result returned by slab.iterate_coupled_lines(). If None, the function
+        will run iterate_coupled_lines() with provided max_iter/tol.
+    max_iter, tol : passed to iterate_coupled_lines if result is None
+    save_prefix : str
+        Prefix for saved PNG filenames (default: '')
+    show : bool
+        If True, call plt.show() after plotting (default True)
+    """
+    import matplotlib.pyplot as _plt
+    import numpy as _np
+
+    if result is None:
+        result = slab.iterate_coupled_lines(lines, max_iter=max_iter, tol=tol, verbose=False)
+
+    S_nu = result["S_nu"]            # shape (ND, Nfreq)
+    # fetch I_emergent without using boolean truth-testing on numpy arrays
+    I_emergent = result.get("I_emergent", None)
+    S_lines = result["S_lines"]      # list of per-line S_line (each length ND)
+    rel_history = result.get("rel_history", None)
+
+    x = slab.x_values
+    tau = slab.tau
+
+    # 1) Emergent spectrum
+    try:
+        _plt.figure(figsize=(8,4))
+        _plt.plot(x, I_emergent, lw=2)
+        _plt.xlabel("x (Doppler units)")
+        _plt.ylabel("Emergent Intensity")
+        _plt.title("Emergent Spectrum (iterate_coupled_lines)")
+        _plt.grid(True)
+        _plt.tight_layout()
+        if save_prefix is not None:
+            _plt.savefig(f'{save_prefix}emergent_spectrum.png', dpi=150)
+        if show:
+            _plt.show()
+        else:
+            _plt.close()
+    except Exception:
+        pass
+
+    # 2) Composite source S_nu heatmap (depth x frequency)
+    try:
+        _plt.figure(figsize=(8,5))
+        extent = [x[0], x[-1], tau[0], tau[-1]]
+        _plt.imshow(S_nu, origin='lower', aspect='auto', extent=extent, cmap='viridis')
+        _plt.colorbar(label='S_nu')
+        _plt.xlabel("x (Doppler units)")
+        _plt.ylabel("Optical depth (tau)")
+        _plt.title("Composite S_nu (depth x frequency)")
+        _plt.tight_layout()
+        if save_prefix is not None:
+            _plt.savefig(f'{save_prefix}composite_S_nu_heatmap.png', dpi=150)
+        if show:
+            _plt.show()
+        else:
+            _plt.close()
+    except Exception:
+        pass
+
+    # 3) Per-line source functions vs tau (use S_lines from result to be consistent)
+    try:
+        _plt.figure(figsize=(6,4))
+        for i, S_line in enumerate(S_lines):
+            _plt.semilogy(_np.log10(tau), S_line, label=f'Line {i+1}')
+        # overlay composite S at each line center on the same axes
+        for i, line in enumerate(lines):
+            idx = int(_np.argmin(_np.abs(x - line.line_center)))
+            try:
+                S_comp = S_nu[:, idx]
+                _plt.semilogy(_np.log10(tau), S_comp, linestyle='--', lw=1.6, label=f'Composite @ x~{line.line_center:.2g}')
+            except Exception:
+                # if S_nu not available for some reason, skip
+                pass
+
+        # Planck function reference
+        if _np.size(slab.B) == slab.ND:
+            _plt.semilogy(_np.log10(tau), slab.B, ':k', label='Planck B (depth)')
+        else:
+            _plt.semilogy(_np.log10(tau), _np.mean(slab.B) * _np.ones_like(tau), ':k', label='Planck B (mean)')
+
+        _plt.xlabel("Optical depth (tau)")
+        _plt.ylabel("S_line / Composite S")
+        _plt.title("Per-line Source Functions and Composite S at line centers")
+        _plt.legend(loc='best')
+        _plt.grid(True)
+        _plt.tight_layout()
+        if save_prefix is not None:
+            _plt.savefig(f'{save_prefix}per_line_S_vs_tau.png', dpi=150)
+        if show:
+            _plt.show()
+        else:
+            _plt.close()
+    except Exception:
+        pass
+
+    # 4) Relative convergence history
+    try:
+        if rel_history is not None and len(rel_history) > 0:
+            _plt.figure(figsize=(5,3))
+            _plt.semilogy(_np.arange(len(rel_history)), rel_history, marker='o')
+            _plt.xlabel("Outer iteration")
+            _plt.ylabel("max_rel")
+            _plt.title("Convergence history")
+            _plt.grid(True)
+            _plt.tight_layout()
+            if save_prefix is not None:
+                _plt.savefig(f'{save_prefix}convergence_history.png', dpi=150)
+            if show:
+                _plt.show()
+            else:
+                _plt.close()
+    except Exception:
+        pass
+
+    # 5) Per-line contribution at mid depth (stacked area) — using denom-based contributions
+    try:
+        # ensure phi_x_global exists for each line and is normalized
+        for i, line in enumerate(lines):
+            if not hasattr(line, 'phi_x_global') or line.phi_x_global.size != x.size:
+                if hasattr(line, 'compute_phi_x'):
+                    line.compute_phi_x(x)
+                norm = _np.sum(line.phi_x * getattr(slab, 'x_weights', _np.ones_like(x) * (x[1] - x[0])))
+                line.phi_x_global = (line.phi_x / norm) if norm != 0.0 else line.phi_x.copy()
+            # print normalization diagnostic
+            sphi = _np.sum(line.phi_x_global * getattr(slab, 'x_weights', _np.ones_like(x) * (x[1] - x[0])))
+            print(f'Line {i+1} phi normalization (sum phi*xw): {sphi:.6g}')
+        # build emissivities (eta = k * phi * S_line)
+        eta_list = []
+        for i, line in enumerate(lines):
+            eta = (line.k * line.phi_x_global)[None, :] * _np.asarray(S_lines[i]).reshape((slab.ND, 1))
+            eta_list.append(eta)
+        # denom-based contributions (as in composite S construction)
+        denom = _np.zeros_like(x)
+        for line in lines:
+            denom += line.k * line.phi_x_global
+        denom_safe = _np.where(denom == 0.0, 1.0, denom)
+        contribs = [eta / denom_safe[None, :] for eta in eta_list]
+        mid = slab.ND // 2
+        contrib_mid = _np.vstack([c[mid, :] for c in contribs])
+        contrib_mid = _np.clip(contrib_mid, 0.0, None)
+        # normalize across lines at each x to avoid tiny rounding errors
+        sum_c = _np.sum(contrib_mid, axis=0)
+        sum_c_safe = _np.where(sum_c == 0.0, 1.0, sum_c)
+        contrib_mid_norm = contrib_mid / sum_c_safe
+        labels = [f'Line {i+1} (x={lines[i].line_center})' for i in range(len(lines))]
+        palette = ['cyan', 'lime', 'maroon', 'magenta', 'yellow', 'orange']
+        _plt.figure(figsize=(10,4))
+        _plt.stackplot(x, contrib_mid_norm, labels=labels, colors=[palette[i % len(palette)] for i in range(len(lines))], alpha=0.85)
+        comp_mid = S_nu[mid, :]
+        comp_scaled = (comp_mid - _np.min(comp_mid)) / (_np.max(comp_mid) - _np.min(comp_mid) + 1e-30)
+        _plt.plot(x, comp_scaled, '--k', lw=2, label='Composite S (mid, scaled)')
+        _plt.xlabel("x (Doppler units)")
+        _plt.ylabel("Per-line contribution (stacked)")
+        _plt.title("Per-line contributions (mid depth) with composite S overlay")
+        _plt.legend(loc='upper right')
+        _plt.grid(True)
+        _plt.tight_layout()
+        if save_prefix is not None:
+            _plt.savefig(f'{save_prefix}per_line_contribs_stack_mid.png', dpi=150)
+        if show:
+            _plt.show()
+        else:
+            _plt.close()
+    except Exception as _e:
+        print('plot_help per-line contributions failed:', _e)
+        pass
+
+    # 6) Per-line contributions vs x (all depths overlay; avg & peak shown)
+    try:
+        # ensure contribs available (rebuild if necessary)
+        try:
+            contribs
+        except NameError:
+            eta_list = []
+            for i, line in enumerate(lines):
+                eta = (line.k * line.phi_x_global)[None, :] * _np.asarray(S_lines[i]).reshape((slab.ND, 1))
+                eta_list.append(eta)
+            denom = _np.zeros_like(x)
+            for line in lines:
+                denom += line.k * line.phi_x_global
+            denom_safe = _np.where(denom == 0.0, 1.0, denom)
+            contribs = [eta / denom_safe[None, :] for eta in eta_list]
+
+        palette = ['cyan', 'lime', 'maroon', 'magenta', 'yellow', 'orange']
+        _plt.figure(figsize=(11,6))
+        decim = max(1, int(_np.ceil(slab.ND / 60)))
+        depths_all = _np.arange(0, slab.ND, decim)
+        for idx, contrib in enumerate(contribs):
+            color = palette[idx % len(palette)]
+            # many faint depth curves
+            for d in depths_all:
+                _plt.plot(x, contrib[d, :], color=color, alpha=0.08, linewidth=1)
+            # average curve across sampled depths
+            mean_curve = _np.mean(contrib[depths_all, :], axis=0)
+            _plt.plot(x, mean_curve, color=color, lw=1.8, alpha=0.9, label=f'Line @{lines[idx].line_center} contribution (avg depths)')
+            # peak depth curve (by integrated contribution)
+            if getattr(slab, 'x_weights', None) is None:
+                xw = _np.ones_like(x) * (x[1] - x[0])
+            else:
+                xw = slab.x_weights
+            total_per_depth = _np.sum(contrib * xw[None, :], axis=1)
+            depth_max = int(_np.argmax(total_per_depth))
+            _plt.plot(x, contrib[depth_max, :], color=color, lw=2.6, alpha=1.0, linestyle='--', label=f'Line @{lines[idx].line_center} peak depth idx={depth_max}, tau={slab.tau[depth_max]:.2g}')
+
+        # overlay composite S (mid depth) and Planck B reference
+        mid = slab.ND // 2
+        _plt.plot(x, S_nu[mid, :], '--k', lw=2.0, label='Composite S (mid depth)')
+        _plt.plot(x, _np.mean(slab.B) * _np.ones_like(x), ':k', label='Planck B (mean)')
+        _plt.xlabel('x (Doppler units)')
+        _plt.ylabel('Per-line contribution to composite S')
+        _plt.title('Per-line contributions vs x (all depths overlay; avg & peak shown)')
+        _plt.legend(loc='upper right')
+        _plt.grid(True)
+        _plt.tight_layout()
+        if save_prefix is not None:
+            _plt.savefig(f'{save_prefix}per_line_contributions_all_depths_vs_x.png', dpi=150)
+        if show:
+            _plt.show()
+        else:
+            _plt.close()
+    except Exception as _e:
+        print('plot_help combined contributions failed:', _e)
+        pass
 
 if __name__ == "__main__":
     # Define the input parameters
