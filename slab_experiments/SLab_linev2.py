@@ -578,12 +578,13 @@ class Slab:
                     I_in_depth = I_in[0]
 
                     # sum contributions from both directions
-                    I_depth_sum = I_out_depth + I_in_depth
+                    I_depth_sum = I_in_depth + I_in_depth
 
                     # accumulate J for each line using its phi at this frequency (use 1/2 when summing ±μ)
                     for j, line in enumerate(lines):
                         phi_j = line.phi_x_global[l]
-                        J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_depth_sum
+                        J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_in_depth
+                        J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_out_depth  
             # Now update each line's S_line using ALI / diagonal ALO if possible
             max_rel = 0.0
             tiny = 1e-20  # small threshold to avoid division by zero
@@ -630,7 +631,15 @@ class Slab:
             "rel_history": np.array(rel_history)
         }
 
-
+    # We should create a function that:
+        # computes the source function for each line 
+        # to do that, it needs to compute the J
+        # to compute J, it needs to compute the emergent intensity from the slab (sc_2nd_order)
+        # for emergent intensity, it shall use tau_lambda =+ tau * (k*phi) for each line + slab's r
+        # J is then using line's phi normalized on the global grid
+        # updates line source function using LI for each line
+        # using updated line source functions to compute slab source function
+        # slab source function is then used to compute emergent intensity again, and the process is repeated until convergence
 def plot_help(slab, lines, result=None, max_iter=2000, tol=1e-6, save_prefix='', show=True):
     """Produce the standard set of diagnostic plots (same as the notebook cell):
     - emergent spectrum
