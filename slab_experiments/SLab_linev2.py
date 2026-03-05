@@ -82,7 +82,7 @@ class Slab:
             self.B = slab_in.B # Planck function
             self.epsilon = slab_in.epsilon # Thermalization parameter, same as the slab's epsilon
         
-        def local_x_grid(self, extent=15.0):
+        def local_x_grid(self, extent=5.0):
             """Generate local x-grid for this line.
             
             Parameters:
