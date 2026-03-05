@@ -82,14 +82,14 @@ class Slab:
             self.B = slab_in.B # Planck function
             self.epsilon = slab_in.epsilon # Thermalization parameter, same as the slab's epsilon
         
-        def local_x_grid(self, extent=25.0):
+        def local_x_grid(self, extent=15.0):
             """Generate local x-grid for this line.
             
             Parameters:
             -----------
             extent : float
                 Distance from line center to grid boundaries (±extent).
-                Default 25.0 to capture full profile without truncation errors.
+                Default 15.0 to capture full profile without truncation errors.
             """
             start = self.line_center - extent  # Start of the local x grid
             end = self.line_center + extent    # End of the local x grid
@@ -640,6 +640,39 @@ class Slab:
         # updates line source function using LI for each line
         # using updated line source functions to compute slab source function
         # slab source function is then used to compute emergent intensity again, and the process is repeated until convergence
+    
+    def lambda_iter_S(self, lines, max_iter=1000, tol=1e-6):
+        self.global_x_grid(lines)
+        self.compute_phi(lines, correct_normalization=False)
+        # ensure x_weights present
+        if getattr(self, "x_weights", None) is None or self.x_weights.size != self.x_values.size:
+            dx = self.x_values[1] - self.x_values[0]
+            self.x_weights = np.ones_like(self.x_values) * dx
+
+        # ensure mu grid exists
+        if getattr(self, "mu_values", None) is None or getattr(self, "mu_weights", None) is None:
+            self.mu_grid(self.NM if self.NM is not None else 8, verbose=False, diffuse=True)
+
+        Nfreq = len(self.x_values)
+        ND = len(self.tau)
+        Nmu = len(self.mu_values)
+        # Ensure each line has phi_x_global and initialize S_line if missing
+        for line in lines:
+            if not hasattr(line, "phi_x_global"):
+                line.compute_phi_x(self.x_values)
+                norm = np.sum(line.phi_x * self.x_weights)
+                line.phi_x_global = line.phi_x / norm if norm != 0.0 else line.phi_x.copy()
+            if getattr(line, "S_line", None) is None:
+                line.S_line = np.copy(self.B)
+        for iteration in tqdm(range(max_iter)):
+            S_nu = self.composite_S(lines)
+            J_lines = [self.compute_J_line(line, S_nu) for line in lines]
+            for m in range(Nmu):
+                mu = self.mu_values[m]
+
+            
+
+
 def plot_help(slab, lines, result=None, max_iter=2000, tol=1e-6, save_prefix='', show=True):
     """Produce the standard set of diagnostic plots (same as the notebook cell):
     - emergent spectrum
