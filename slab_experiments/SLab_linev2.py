@@ -82,7 +82,7 @@ class Slab:
             self.B = slab_in.B # Planck function
             self.epsilon = slab_in.epsilon # Thermalization parameter, same as the slab's epsilon
         
-        def local_x_grid(self, extent=5.0):
+        def local_x_grid(self, extent=6.0):
             """Generate local x-grid for this line.
             
             Parameters:
@@ -144,7 +144,7 @@ class Slab:
             self.J_scatter = J_inc
             del(J_inc)
 
-        def compute_S_line(self, max_iter = 1000, tol = 1e-6, global_x_grid = None):
+        def compute_S_line(self, max_iter = 1000, tol = 1e-6, global_x_grid = None, type = "voigt"):
             # Use slab global grid if not provided
             if global_x_grid is None:
                 if getattr(self.slab_in, "x_values", None) is None:
@@ -159,7 +159,8 @@ class Slab:
             self.slab_in.mu_grid(N_mu, verbose=False, diffuse=True)
 
             # Evaluate this line profile on the global x-grid and normalize using slab weights
-            self.compute_phi_x(global_x_grid)   # fills self.phi_x at global_x_grid points
+            self.compute_phi_x(global_x_grid, type = type)  
+            print(f"Computed line profile for global x-grid with type: {type}") # fills self.phi_x at global_x_grid points
             if getattr(self.slab_in, "x_weights", None) is None:
                 dx = global_x_grid[1] - global_x_grid[0]
                 self.slab_in.x_weights = np.ones_like(global_x_grid) * dx
@@ -624,6 +625,7 @@ class Slab:
         # final outputs
         final_S_nu = self.composite_S(lines)
         final_I = self.formal_solution(lines, mu=1.0, boundary_condition=0.0)
+        print("Final emergent intensity:", final_I)
         return {
             "S_nu": final_S_nu,
             "I_emergent": final_I,
