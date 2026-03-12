@@ -34,6 +34,28 @@ import illuminated_finite_slab as ills
 # the incoming intensity, attenuated by the optical depth in the slab. This is >>constant<<
 # for given slab model.
 
+# CONSIDER:
+# 
+# 
+# Iterative scheme with such a pseudo code: 
+# slab = Slab(ND, tau_max, epsilon, B, H)
+# slab.add_line(line_center=0.0, a=0.0, k=1.0) # Might still be necessary to point to the mother slab. Because I am not sure how is that being done in python. i.e. does the element 'know' in which object it is instantiated 
+# slab.add_line(line_center=5.0, a=0.5, k=0.5)
+# slab.global_x_grid() # This will build the global x grid by concatenating the local x grids of the lines
+# for line in slab.lines:
+#     line.calculate_profiles_and_norms(slab.x_grid_global[]) # This will calculate the line profile at the global x grid points, and also calculate the normalization factor for the line profile, so that we can use it to calculate the correct contribution of each line to the total optical depth and source function at each point in the global x grid. This is important because the local x grids of the lines may have different step sizes, and we need to make sure that we are correctly accounting for the contribution of each line to the total optical depth and source function at each point in the global x grid.
+# for i in range(max_iter):
+#     I_field = np.zeros([NM,NX])
+#     slab.calculate_composite_S() # Add appropriate contributions from each line to the composite source function S_nu(depth) on the global x grid
+#     for m in range(N_mu):
+#         for l in range(N_x):
+#             I[m,x] = slab.formal_solution(mu[m], x[l]) # Calculate the emergent intensity at the top of the slab for each mu and x point using the composite S_nu(depth) and the total optical depth at that x point
+#     for line in slab.lines:
+#        line.update_S_line(I) # Update the line source function S_line(depth) using the new J calculated from the formal solution
+#     # Check for convergence of the line source functions, if converged break    
+#     # That's it!
+
+
 
 class Slab:
     def __init__(self, ND, tau_max, epsilon, B, H):
