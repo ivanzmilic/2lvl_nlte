@@ -308,19 +308,7 @@ class Slab:
             line.global_x_weights = self.x_weights[idx]
 
     def compute_phi(self, lines, correct_normalization=True, correction_extent=30.0):
-        """Compute total line profile on global grid and normalize per-line profiles.
-        
-        Parameters:
-        -----------
-        lines : list
-            List of Line objects.
-        correct_normalization : bool
-            If True, compute normalization correction using wider x-range to
-            account for profile truncation. Eliminates sub-percent errors.
-        correction_extent : float
-            Extent for normalization correction evaluation (±extent from line center).
-            Default 30.0 ensures normalization error <0.0001 for most profiles.
-        """
+        #Compute total line profile on global grid and normalize per-line profiles.
         # We will compute the total line profile phi at each point in the global x grid by summing the contributions from all lines
         self.phi = np.zeros_like(self.x_values)
         for line in lines:
@@ -577,19 +565,16 @@ class Slab:
                     for line in lines:
                         phi_l = line.phi_x_global[l]
                         tau_lambda += self.tau * (line.k * phi_l)
-                    
-                    # formal solution for this (mu,nu) with frequency-dependent S_nu[:,l]
-                    # include both outward and inward rays so lines see the correct illumination
-                    # outward ray (from bottom, bottom boundary assumed zero)
+                
+                    # outward ray 
                     I_out = sc_2nd_order(tau_lambda, S_nu[:, l], mu, 0.0)
                     I_out_depth = I_out[0]
-                    # inward ray (from top) uses actual top illumination
-                    top_bc = self.get_boundary_radiation(mu)
+                    # inward ray 
                     I_in = sc_2nd_order(tau_lambda, S_nu[:, l], -mu, 0.0)
                     I_in_depth = I_in[0]
 
                     # sum contributions from both directions
-                    I_depth_sum = I_in_depth + I_in_depth
+                    I_depth_sum = I_in_depth + I_out_depth
 
                     # accumulate J for each line using its phi at this frequency (use 1/2 when summing ±μ)
                     # NOTE: This would maybe be cleared, if there was a method/function that passes I_in, I_out to 
@@ -647,7 +632,6 @@ class Slab:
             "rel_history": np.array(rel_history)
         }
 
-    
     def iterative_scheme(self, lines, max_iter = 1000, tol = 1e-6, verbose = False):
         self.global_x_grid(lines)  # Build global x grid and compute weights
         self.compute_phi(lines, correct_normalization=False)  # Compute total line profile on global grid and normalize per-line profiles
@@ -705,8 +689,6 @@ class Slab:
             "S_lines": [line.S_line.copy() for line in lines],
         }
             
-
-
 def plot_help(slab, lines, result=None, max_iter=2000, tol=1e-6, save_prefix='', show=True):
     """Produce the standard set of diagnostic plots (same as the notebook cell):
     - emergent spectrum
@@ -979,7 +961,6 @@ if __name__ == "__main__":
     plt.grid()
     plt.savefig('intensity_vs_x_k1_'+str(line1.k)+'_k2_'+str(line2.k)+'.png')
 
-
     # Plot the source function of each line and composite source function
     plt.figure(figsize=(10, 6))
     for line in lines:
@@ -995,7 +976,6 @@ if __name__ == "__main__":
     plt.grid()
     plt.legend()
     plt.savefig('source_function_vs_tau_k1_'+str(line1.k)+'_k2_'+str(line2.k)+'.png')
-
 
     # Build composite source function grid (depth x frequency)
     S_nu_grid = slab.composite_S(lines)   # shape (ND, Nfreq)
