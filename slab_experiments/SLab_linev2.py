@@ -47,6 +47,7 @@ class Slab:
         self.S = np.zeros(ND)  # Source function, to be calculated later
         self.I = np.zeros(ND) # Intensity
         self.r = 0.0
+        
         # More parameters:
         self.mu_values = None
         self.mu_weights = None
@@ -112,7 +113,7 @@ class Slab:
             else:
                 raise ValueError("Unknown line profile type")
             
-        def compute_weights(self, verbose=False):
+        def compute_weights(self, verbose=False): # NOTE: Technically we don't need this! 
             self.compute_phi_x(self.x_grid)  # Compute the line profile at the local x grid
             x_weights = np.ones_like(self.x_grid) * (self.x_grid[-1]-self.x_grid[0]) / len(self.x_grid)
             norm = np.sum(self.phi_x * x_weights)  # Normalization factor for the line profile
@@ -121,7 +122,8 @@ class Slab:
             if verbose:
                 print(f"Weights for local x grid: {self.x_weights}")
 
-        # In case we want J_scat
+        # In case we want J_scat 
+        # NOTE: This also depends on the *TOTAL* optical depth.
         def compute_J_scat(self):
              # This function will compute the J_scat for this line
             ND = self.slab_in.ND
@@ -564,9 +566,11 @@ class Slab:
                     w_x = self.x_weights[l]
                     # total opacity at this freq: sum over lines (k*phi + r)
                     tau_lambda = np.zeros_like(self.tau)
+                    tau_lambda += self.r * self.tau  # add slab continuum opacity
                     for line in lines:
                         phi_l = line.phi_x_global[l]
-                        tau_lambda += self.tau * (line.k * phi_l + self.r)
+                        tau_lambda += self.tau * (line.k * phi_l)
+                    
                     # formal solution for this (mu,nu) with frequency-dependent S_nu[:,l]
                     # include both outward and inward rays so lines see the correct illumination
                     # outward ray (from bottom, bottom boundary assumed zero)
@@ -581,6 +585,8 @@ class Slab:
                     I_depth_sum = I_in_depth + I_in_depth
 
                     # accumulate J for each line using its phi at this frequency (use 1/2 when summing ±μ)
+                    # NOTE: This would maybe be cleared, if there was a method/function that passes I_in, I_out to 
+                    # to he lines, and then they add it to their J 
                     for j, line in enumerate(lines):
                         phi_j = line.phi_x_global[l]
                         J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_in_depth
@@ -589,6 +595,8 @@ class Slab:
             max_rel = 0.0
             tiny = 1e-20  # small threshold to avoid division by zero
             for j, line in enumerate(lines):
+                # NOTE this could also be something like line.update_S_line()
+                # which could return the relative change. In order to check the convergence. 
                 J = J_lines[j]
                 S_old = line.S_line
 
