@@ -34,6 +34,28 @@ import illuminated_finite_slab as ills
 # the incoming intensity, attenuated by the optical depth in the slab. This is >>constant<<
 # for given slab model.
 
+# CONSIDER:
+# 
+# 
+# Iterative scheme with such a pseudo code: 
+# slab = Slab(ND, tau_max, epsilon, B, H)
+# slab.add_line(line_center=0.0, a=0.0, k=1.0) # Might still be necessary to point to the mother slab. Because I am not sure how is that being done in python. i.e. does the element 'know' in which object it is instantiated 
+# slab.add_line(line_center=5.0, a=0.5, k=0.5)
+# slab.global_x_grid() # This will build the global x grid by concatenating the local x grids of the lines
+# for line in slab.lines:
+#     line.calculate_profiles_and_norms(slab.x_grid_global[]) # This will calculate the line profile at the global x grid points, and also calculate the normalization factor for the line profile, so that we can use it to calculate the correct contribution of each line to the total optical depth and source function at each point in the global x grid. This is important because the local x grids of the lines may have different step sizes, and we need to make sure that we are correctly accounting for the contribution of each line to the total optical depth and source function at each point in the global x grid.
+# for i in range(max_iter):
+#     I_field = np.zeros([NM,NX])
+#     slab.calculate_composite_S() # Add appropriate contributions from each line to the composite source function S_nu(depth) on the global x grid
+#     for m in range(N_mu):
+#         for l in range(N_x):
+#             I[m,x] = slab.formal_solution(mu[m], x[l]) # Calculate the emergent intensity at the top of the slab for each mu and x point using the composite S_nu(depth) and the total optical depth at that x point
+#     for line in slab.lines:
+#        line.update_S_line(I) # Update the line source function S_line(depth) using the new J calculated from the formal solution
+#     # Check for convergence of the line source functions, if converged break    
+#     # That's it!
+
+
 
 class Slab:
     def __init__(self, ND, tau_max, epsilon, B, H):
@@ -83,7 +105,7 @@ class Slab:
             self.B = slab_in.B # Planck function
             self.epsilon = slab_in.epsilon # Thermalization parameter, same as the slab's epsilon
         
-        def local_x_grid(self, extent=15.0):
+        def local_x_grid(self, extent=6.0):
             """Generate local x-grid for this line.
             
             Parameters:
@@ -146,7 +168,7 @@ class Slab:
             self.J_scatter = J_inc
             del(J_inc)
 
-        def compute_S_line(self, max_iter = 1000, tol = 1e-6, global_x_grid = None):
+        def compute_S_line(self, max_iter = 1000, tol = 1e-6, global_x_grid = None, type = "voigt"):
             # Use slab global grid if not provided
             if global_x_grid is None:
                 if getattr(self.slab_in, "x_values", None) is None:
@@ -161,7 +183,8 @@ class Slab:
             self.slab_in.mu_grid(N_mu, verbose=False, diffuse=True)
 
             # Evaluate this line profile on the global x-grid and normalize using slab weights
-            self.compute_phi_x(global_x_grid)   # fills self.phi_x at global_x_grid points
+            self.compute_phi_x(global_x_grid, type = type)  
+            print(f"Computed line profile for global x-grid with type: {type}") # fills self.phi_x at global_x_grid points
             if getattr(self.slab_in, "x_weights", None) is None:
                 dx = global_x_grid[1] - global_x_grid[0]
                 self.slab_in.x_weights = np.ones_like(global_x_grid) * dx
@@ -491,22 +514,6 @@ class Slab:
 
         return S_nu_grid
 
-
-    def see_source_function(self, lines, slab_intensity):
-        """Update source functions for all lines using current slab intensity, then update slab intensity.
-        
-        Parameters:
-        -----------
-        lines : list
-            List of Line objects.
-        slab_intensity : array
-            Current emergent intensity spectrum of the slab on global x-grid.
-        """
-        for line in lines:
-            line.compute_S_line(max_iter=1000, tol=1e-6, global_x_grid=self.x_values, boundary_condition=1.0)
-        # Update slab intensity using the new S_line of each line
-        self.I = self.formal_solution(lines, mu=1.0, boundary_condition=1.0)
-
     def iterate_coupled_lines(self, lines, max_iter=40, tol=1e-4, verbose=False, omega=1.0):
         """
         Iterate lines and slab consistently so lines "see" each other through the slab intensity.
@@ -632,6 +639,7 @@ class Slab:
         # final outputs
         final_S_nu = self.composite_S(lines)
         final_I = self.formal_solution(lines, mu=1.0, boundary_condition=0.0)
+        print("Final emergent intensity:", final_I)
         return {
             "S_nu": final_S_nu,
             "I_emergent": final_I,
@@ -639,45 +647,63 @@ class Slab:
             "rel_history": np.array(rel_history)
         }
 
-    # We should create a function that:
-        # computes the source function for each line 
-        # to do that, it needs to compute the J
-        # to compute J, it needs to compute the emergent intensity from the slab (sc_2nd_order)
-        # for emergent intensity, it shall use tau_lambda =+ tau * (k*phi) for each line + slab's r
-        # J is then using line's phi normalized on the global grid
-        # updates line source function using LI for each line
-        # using updated line source functions to compute slab source function
-        # slab source function is then used to compute emergent intensity again, and the process is repeated until convergence
     
-    def lambda_iter_S(self, lines, max_iter=1000, tol=1e-6):
-        self.global_x_grid(lines)
-        self.compute_phi(lines, correct_normalization=False)
-        # ensure x_weights present
-        if getattr(self, "x_weights", None) is None or self.x_weights.size != self.x_values.size:
-            dx = self.x_values[1] - self.x_values[0]
-            self.x_weights = np.ones_like(self.x_values) * dx
-
+    def iterative_scheme(self, lines, max_iter = 1000, tol = 1e-6, verbose = False):
+        self.global_x_grid(lines)  # Build global x grid and compute weights
+        self.compute_phi(lines, correct_normalization=False)  # Compute total line profile on global grid and normalize per-line profiles
         # ensure mu grid exists
         if getattr(self, "mu_values", None) is None or getattr(self, "mu_weights", None) is None:
             self.mu_grid(self.NM if self.NM is not None else 8, verbose=False, diffuse=True)
-
+        
         Nfreq = len(self.x_values)
         ND = len(self.tau)
         Nmu = len(self.mu_values)
-        # Ensure each line has phi_x_global and initialize S_line if missing
-        for line in lines:
-            if not hasattr(line, "phi_x_global"):
-                line.compute_phi_x(self.x_values)
-                norm = np.sum(line.phi_x * self.x_weights)
-                line.phi_x_global = line.phi_x / norm if norm != 0.0 else line.phi_x.copy()
-            if getattr(line, "S_line", None) is None:
-                line.S_line = np.copy(self.B)
+        S_use = self.composite_S(lines)  # Compute composite S_nu(depth) on global x-grid 
+        print(S_use)
         for iteration in tqdm(range(max_iter)):
-            S_nu = self.composite_S(lines)
-            J_lines = [self.compute_J_line(line, S_nu) for line in lines]
+            I_field = np.zeros((Nmu, Nfreq))
+            J_lines = [np.zeros(ND) for _ in lines]  # J for each line (depth array)
+            
             for m in range(Nmu):
                 mu = self.mu_values[m]
+                w_mu = self.mu_weights[m]
+                for l in range(Nfreq):
+                    w_x = self.x_weights[l]
+                    tau_lambda = np.zeros_like(self.tau)
+                    for line in lines:
+                        phi_l = line.phi_x_global[l]
+                        tau_lambda += self.tau * (line.k * phi_l + self.r)
+                    # formal solution for this (mu,nu) with frequency-dependent S_use[:,l]
+                    I = sc_2nd_order(tau_lambda, S_use[:, l], mu, 0.0)
+                    I_out = I[0]
 
+                    # inward ray (from top) uses actual top illumination
+                    I_in = sc_2nd_order(tau_lambda, S_use[:, l], -mu, 0.0)
+                    I_in = I_in[0]
+                    I_f = I_out + I_in  # sum contributions from both directions to return
+                    for j, line in enumerate(lines):
+                        phi_j = line.phi_x_global[l]
+                        J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_out
+                        J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_in
+            for line in lines:
+                J = J_lines[j]
+                S_old = line.S_line
+                S_new = line.epsilon * line.B + (1.0 - line.epsilon) * J
+                dS = S_new - S_old
+                line.S_line = S_old + dS
+                max_change = np.max(np.abs(dS/line.S_line))
+                if max_change < tol:
+                    if verbose:
+                        print(f"iterative_scheme converged after {iteration} iterations (max_rel={max_change:.3e})")
+                    break
+        
+        #final_I = self.formal_solution(lines, mu=1.0, boundary_condition=0.0)
+        final_S = self.composite_S(lines)
+        return {
+            "S_nu": final_S,
+            "I_emergent": I_f,
+            "S_lines": [line.S_line.copy() for line in lines],
+        }
             
 
 
