@@ -1015,6 +1015,14 @@ def plot_help(slab, lines, result=None, max_iter=2000, tol=1e-6, save_prefix='',
         print('plot_help combined contributions failed:', _e)
         pass
 
+# TESTS FOR THE SLAB WITH MULTIPLE LINES:
+# 1) Test the code on one line only and compare to the one-line code - DONE 
+# 2) Test the code with two lines where one line is extremely weak, and compare to one-line code. 
+# 3) Test the code with two lines that are identical and significantly separated in wavelength, and compare each to the one-line code. 
+# Then, implement incident radiation:
+# 4) Make two lines with small but non-negligible optical depth (say, 0.1-1.0) and different strengths, and compare the emergent intensities
+#    These should be equal to the ratio of the lines.
+
 if __name__ == "__main__":
     # Define the input parameters
     ND = 81
