@@ -228,7 +228,64 @@ class Slab:
                     return
             # if not converged, leave S_line as last estimate
             print("compute_S_line: did not converge within max_iter")
-
+        
+        def initialize_J(self):
+            """Initialize J array for this line (called at start of each iteration)."""
+            ND = len(self.slab_in.tau)
+            self.J = np.zeros(ND)
+            self.J_old = None  # Will store previous J for convergence checking
+            
+        def accumulate_J(self, I_out, I_in, freq_idx, w_mu, phi_j, weight_factor=0.5):
+            """Accumulate J from outward and inward intensity contributions.
+            
+            Parameters:
+            -----------
+            I_out : np.ndarray
+                Intensity array from outward ray solve (shape ND)
+            I_in : np.ndarray
+                Intensity array from inward ray solve (shape ND)
+            freq_idx : int
+                Current frequency index (for this line's phi evaluation)
+            w_mu : float
+                Weight for this mu point
+            phi_j : float
+                Line profile value at this frequency
+            weight_factor : float
+                Quadrature weight (typically 0.5 for ±μ contributions)
+            """
+            if self.J is None:
+                ND = len(self.slab_in.tau)
+                self.J = np.zeros(ND)
+            
+            w_x = self.slab_in.x_weights[freq_idx]
+            weight = weight_factor * w_mu * w_x * phi_j
+            self.J += weight * (I_out + I_in)
+            
+        def update_S_line(self):
+            """Update S_line based on accumulated J, using simple Lambda iteration.
+            
+            Returns:
+            --------
+            rel_error : float
+                Maximum relative change in S_line
+            """
+            if self.J is None:
+                raise ValueError("update_S_line: J not initialized. Call accumulate_J first.")
+            
+            S_old = self.S_line.copy()
+            tiny = 1e-20
+            
+            # Simple LI update: S_new = epsilon * B + (1 - epsilon) * J
+            S_new = self.epsilon * self.B + (1.0 - self.epsilon) * self.J
+            
+            # Measure relative change
+            rel = np.max(np.abs((S_new - S_old) / np.where(np.abs(S_new) > tiny, S_new, tiny)))
+            
+            # Update
+            self.S_line = S_new
+            self.J_old = self.J.copy()
+            
+            return rel
 
     def compute_tau(self):
     # As the most robust method we will use log-spaced grid on both sides.
@@ -388,17 +445,6 @@ class Slab:
 
     # Define formal solution for the emergent spectrum that lines can call for their source function
     def formal_solution(self, lines, mu, boundary_condition):
-        """Compute emergent intensity spectrum at given observation angle.
-        
-        Parameters:
-        -----------
-        lines : list
-            List of Line objects.
-        mu : float
-            Cosine of observation angle (mu=1.0 is vertical).
-        boundary_condition : float or array
-            Boundary condition intensity at top of slab. If float, same for all frequencies; if array, per frequency.
-        """
         # Setup: build global x-grid and compute per-line profiles
         self.S = np.copy(self.B)
         self.global_x_grid(lines)  # Build global x grid and compute weights
@@ -461,13 +507,6 @@ class Slab:
         return I_emergent
 
     def composite_S(self, lines):
-        """Compute composite source function S_nu(depth) on global x-grid.
-        
-        Parameters:
-        -----------
-        lines : list
-            List of Line objects.
-        """
         self.global_x_grid(lines)  # Build global x grid and compute weights
         self.compute_phi(lines, correct_normalization=False)
 
@@ -633,8 +672,13 @@ class Slab:
         }
 
     def iterative_scheme(self, lines, max_iter = 1000, tol = 1e-6, verbose = False):
+        # Setup: global grid, profiles, quadrature
         self.global_x_grid(lines)  # Build global x grid and compute weights
         self.compute_phi(lines, correct_normalization=False)  # Compute total line profile on global grid and normalize per-line profiles
+        # ensure x_weights present
+        if getattr(self, "x_weights", None) is None or self.x_weights.size != self.x_values.size:
+            dx = self.x_values[1] - self.x_values[0]
+            self.x_weights = np.ones_like(self.x_values) * dx
         # ensure mu grid exists
         if getattr(self, "mu_values", None) is None or getattr(self, "mu_weights", None) is None:
             self.mu_grid(self.NM if self.NM is not None else 8, verbose=False, diffuse=True)
@@ -642,51 +686,93 @@ class Slab:
         Nfreq = len(self.x_values)
         ND = len(self.tau)
         Nmu = len(self.mu_values)
-        S_use = self.composite_S(lines)  # Compute composite S_nu(depth) on global x-grid 
-        print(S_use)
+        
+        # INITIALIZATION: Ensure global profiles and initialize S_line in one place
+        for line in lines:
+            if not hasattr(line, "phi_x_global"):
+                line.compute_phi_x(self.x_values)
+                norm = np.sum(line.phi_x * self.x_weights)
+                line.phi_x_global = line.phi_x / norm if norm != 0.0 else line.phi_x.copy()
+            # Initialize S_line = B (clean state for multi-line interaction)
+            if getattr(line, "S_line", None) is None:
+                line.S_line = np.copy(self.B)
+        
+        rel_history = []
         for iteration in tqdm(range(max_iter)):
-            I_field = np.zeros((Nmu, Nfreq))
-            J_lines = [np.zeros(ND) for _ in lines]  # J for each line (depth array)
+            # Build current composite S_nu on global grid (depth x freq)
+            S_nu = self.composite_S(lines)  # uses current line.S_line internally
             
+            # Initialize J for each line
+            for line in lines:
+                line.initialize_J()
+            
+            # Loop over angles and frequencies, using composite S_nu for formal solution
             for m in range(Nmu):
                 mu = self.mu_values[m]
                 w_mu = self.mu_weights[m]
                 for l in range(Nfreq):
-                    w_x = self.x_weights[l]
+                    # Total opacity at this freq: sum over lines (including continuum)
                     tau_lambda = np.zeros_like(self.tau)
+                    tau_lambda += self.r * self.tau  # add slab continuum opacity
+                    
+                    # Accumulate line opacity contributions at this frequency
+                    line_opacity_contrib = {}
+                    total_line_opacity = 0.0
                     for line in lines:
                         phi_l = line.phi_x_global[l]
-                        tau_lambda += self.tau * (line.k * phi_l + self.r)
-                    # formal solution for this (mu,nu) with frequency-dependent S_use[:,l]
-                    I = sc_2nd_order(tau_lambda, S_use[:, l], mu, 0.0)
-                    I_out = I[0]
-
-                    # inward ray (from top) uses actual top illumination
-                    I_in = sc_2nd_order(tau_lambda, S_use[:, l], -mu, 0.0)
-                    I_in = I_in[0]
-                    I_f = I_out + I_in  # sum contributions from both directions to return
-                    for j, line in enumerate(lines):
+                        line_opacity = line.k * phi_l
+                        line_opacity_contrib[line] = line_opacity
+                        total_line_opacity += line_opacity
+                        tau_lambda += self.tau * line_opacity
+                    
+                    # Solve formal solution using composite source and total opacity
+                    I_out = sc_2nd_order(tau_lambda, S_nu[:, l], mu, 0.0)
+                    I_out_depth = I_out[0]
+                    I_in = sc_2nd_order(tau_lambda, S_nu[:, l], -mu, 0.0)
+                    I_in_depth = I_in[0]
+                    
+                    # Distribute J contributions to each line weighted by opacity fraction
+                    # This ensures each line "owns" its fraction of the radiation field
+                    for line in lines:
                         phi_j = line.phi_x_global[l]
-                        J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_out
-                        J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_in
+                        
+                        # Weight this line's J by its opacity fraction at this frequency
+                        if total_line_opacity > 0.0:
+                            opacity_frac = line_opacity_contrib[line] / total_line_opacity
+                        else:
+                            opacity_frac = 1.0 / len(lines)  # Equal sharing if no opacity
+                        
+                        # accumulate_J will apply: weight * (I_out + I_in)
+                        # where weight = 0.5 * w_mu * w_x * phi_j * opacity_frac
+                        line.accumulate_J(I_out_depth, I_in_depth, l, w_mu, phi_j, weight_factor=0.5*opacity_frac)
+            
+            # Update each line's S_line independently and check convergence
+            max_rel = 0.0
             for line in lines:
-                J = J_lines[j]
-                S_old = line.S_line
-                S_new = line.epsilon * line.B + (1.0 - line.epsilon) * J
-                dS = S_new - S_old
-                line.S_line = S_old + dS
-                max_change = np.max(np.abs(dS/line.S_line))
-                if max_change < tol:
-                    if verbose:
-                        print(f"iterative_scheme converged after {iteration} iterations (max_rel={max_change:.3e})")
-                    break
+                rel = line.update_S_line()
+                max_rel = max(max_rel, rel)
+            
+            rel_history.append(max_rel)
+            if verbose:
+                print(f"iterative_scheme iter {iteration:3d} max_rel={max_rel:.3e}")
+            
+            # Check convergence
+            if max_rel < tol:
+                if verbose:
+                    print(f"iterative_scheme converged after {iteration} iterations (max_rel={max_rel:.3e})")
+                break
+        else:
+            if verbose:
+                print("iterative_scheme: did not converge within max_iter")
         
-        #final_I = self.formal_solution(lines, mu=1.0, boundary_condition=0.0)
-        final_S = self.composite_S(lines)
+        # Compute final outputs using converged source functions
+        final_S_nu = self.composite_S(lines)
+        final_I = self.formal_solution(lines, mu=1.0, boundary_condition=0.0)
         return {
-            "S_nu": final_S,
-            "I_emergent": I_f,
+            "S_nu": final_S_nu,
+            "I_emergent": final_I,
             "S_lines": [line.S_line.copy() for line in lines],
+            "rel_history": np.array(rel_history)
         }
             
 def plot_help(slab, lines, result=None, max_iter=2000, tol=1e-6, save_prefix='', show=True):
