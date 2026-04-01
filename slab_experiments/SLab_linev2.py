@@ -716,35 +716,29 @@ class Slab:
                     tau_lambda += self.r * self.tau  # add slab continuum opacity
                     
                     # Accumulate line opacity contributions at this frequency
-                    line_opacity_contrib = {}
-                    total_line_opacity = 0.0
                     for line in lines:
                         phi_l = line.phi_x_global[l]
                         line_opacity = line.k * phi_l
-                        line_opacity_contrib[line] = line_opacity
-                        total_line_opacity += line_opacity
                         tau_lambda += self.tau * line_opacity
                     
                     # Solve formal solution using composite source and total opacity
+                    # This intensity field includes contributions from all lines via total opacity
                     I_out = sc_2nd_order(tau_lambda, S_nu[:, l], mu, 0.0)
                     I_out_depth = I_out[0]
                     I_in = sc_2nd_order(tau_lambda, S_nu[:, l], -mu, 0.0)
                     I_in_depth = I_in[0]
                     
-                    # Distribute J contributions to each line weighted by opacity fraction
-                    # This ensures each line "owns" its fraction of the radiation field
+                    # Each line independently measures J from the intensity field
+                    # No opacity-fraction weighting: each line's J = integral of (phi * I)
+                    # Line strength differences emerge naturally through:
+                    # (1) Different opacity -> different I fields
+                    # (2) Different phi_x_global -> different J integrals
+                    # (3) Iterative feedback modulating each line's S_line
                     for line in lines:
                         phi_j = line.phi_x_global[l]
-                        
-                        # Weight this line's J by its opacity fraction at this frequency
-                        if total_line_opacity > 0.0:
-                            opacity_frac = line_opacity_contrib[line] / total_line_opacity
-                        else:
-                            opacity_frac = 1.0 / len(lines)  # Equal sharing if no opacity
-                        
-                        # accumulate_J will apply: weight * (I_out + I_in)
-                        # where weight = 0.5 * w_mu * w_x * phi_j * opacity_frac
-                        line.accumulate_J(I_out_depth, I_in_depth, l, w_mu, phi_j, weight_factor=0.5*opacity_frac)
+                        # Each line accumulates J with weight = 0.5 * w_mu * w_x * phi_j
+                        # Do NOT weight by opacity fraction - that suppresses weaker lines
+                        line.accumulate_J(I_out_depth, I_in_depth, l, w_mu, phi_j, weight_factor=0.5)
             
             # Update each line's S_line independently and check convergence
             max_rel = 0.0
