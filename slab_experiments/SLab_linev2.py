@@ -75,8 +75,32 @@ class Slab:
         self.mu_weights = None
         self.x_values = None
         self.x_weights = None
+        
+        # Lines collection for convenient API
+        self.lines = []
 
         self.compute_tau()  # Compute the tau grid, this function can also be used externally
+    
+    def add_line(self, line_center=0.0, a=0.0, k=1.0):
+        """Add a spectral line to the slab.
+        
+        Parameters
+        ----------
+        line_center : float
+            Center of the line in Doppler units
+        a : float
+            Damping parameter (0.0 for Gaussian, typical 0.001-0.01 for Voigt)
+        k : float
+            Line strength / opacity weighting factor
+            
+        Returns
+        -------
+        line : Slab.Line
+            The created line object
+        """
+        line = self.Line(len(self.tau), line_center=line_center, a=a, k=k, slab_in=self)
+        self.lines.append(line)
+        return line
 
     class Line:
         def __init__(self, NL, line_center, a, k, slab_in):
@@ -302,10 +326,13 @@ class Slab:
         # Put these two together
         self.tau = np.concatenate((tau_first_half, tau_second_half[1:]))
 
-    def global_x_grid(self, lines):
+    def global_x_grid(self, lines=None):
         # Build a global x-grid by concatenating all line local x-grids,
         # storing each line's local x values, and computing correct
         # non-uniform integration weights for the global grid.
+        # If lines is None, use self.lines.
+        if lines is None:
+            lines = self.lines
         all_x = []
         for line in lines:
             # Ensure local x-grid exists on the line
@@ -364,7 +391,10 @@ class Slab:
             line.global_x_values = self.x_values[idx]
             line.global_x_weights = self.x_weights[idx]
 
-    def compute_phi(self, lines, correct_normalization=True, correction_extent=30.0):
+    def compute_phi(self, lines=None, correct_normalization=True, correction_extent=30.0):
+        # If lines is None, use self.lines.
+        if lines is None:
+            lines = self.lines
         #Compute total line profile on global grid and normalize per-line profiles.
         # We will compute the total line profile phi at each point in the global x grid by summing the contributions from all lines
         self.phi = np.zeros_like(self.x_values)
@@ -444,7 +474,10 @@ class Slab:
             return I_0
 
     # Define formal solution for the emergent spectrum that lines can call for their source function
-    def formal_solution(self, lines, mu, boundary_condition):
+    def formal_solution(self, lines=None, mu=1.0, boundary_condition=0.0):
+        # If lines is None, use self.lines.
+        if lines is None:
+            lines = self.lines
         # Setup: build global x-grid and compute per-line profiles
         self.S = np.copy(self.B)
         self.global_x_grid(lines)  # Build global x grid and compute weights
@@ -506,7 +539,10 @@ class Slab:
         self.I = I_emergent
         return I_emergent
 
-    def composite_S(self, lines):
+    def composite_S(self, lines=None):
+        # If lines is None, use self.lines.
+        if lines is None:
+            lines = self.lines
         self.global_x_grid(lines)  # Build global x grid and compute weights
         self.compute_phi(lines, correct_normalization=False)
 
@@ -671,7 +707,10 @@ class Slab:
             "rel_history": np.array(rel_history)
         }
 
-    def iterative_scheme(self, lines, max_iter = 1000, tol = 1e-6, verbose = False):
+    def iterative_scheme(self, lines=None, max_iter = 1000, tol = 1e-6, verbose = False):
+        # If lines is None, use self.lines.
+        if lines is None:
+            lines = self.lines
         # Setup: global grid, profiles, quadrature
         self.global_x_grid(lines)  # Build global x grid and compute weights
         self.compute_phi(lines, correct_normalization=False)  # Compute total line profile on global grid and normalize per-line profiles
@@ -1027,243 +1066,48 @@ if __name__ == "__main__":
 
     # Create the slab instance
     slab = Slab(ND, tau_max, epsilon, B, H)
-    # Create the line instances
-    line1 = slab.Line(81, line_center=0.0, a=0.1, k=1.0, slab_in=slab)  # Example line, we will need to pass the slab instance to the line   
-    line2 = slab.Line(81, line_center=3.2, a=0.2, k=8.0, slab_in=slab)  # Another example line
-    #line3 = slab.Line(81, line_center=8.5, a= 0.5, k=3.0, slab_in=slab)
-    lines = [line1, line2]
-    slab.global_x_grid(lines)
-    line1.compute_S_line(max_iter=2000, tol=1e-6, global_x_grid=slab.x_values)
-    line2.compute_S_line(max_iter=2000, tol=1e-6, global_x_grid=slab.x_values)
-    #line3.compute_S_line(max_iter=2000, tol=1e-6, global_x_grid=slab.x_values)
-    # Compute the source function for each line
-    S = slab.formal_solution(lines, mu = 1.0, boundary_condition = 1.0)
+    
+    # NEW CLEANER API: Use add_line() method instead of manual Line() creation
+    # No need to call global_x_grid() or compute_S_line() before iterative_scheme()!
+    slab.add_line(line_center=0.0, a=0.1, k=1.0)  # Line 1
+    slab.add_line(line_center=3.2, a=0.2, k=8.0)  # Line 2
+    
+    # Run iterative_scheme() - it handles everything!
+    # Lines default to self.lines, so no need to pass lines argument
+    result = slab.iterative_scheme(max_iter=2000, tol=1e-6, verbose=False)
+    
+    # Extract results
+    S_nu = result['S_nu']
+    I_emergent = result['I_emergent']
+    S_lines = result['S_lines']
+
     # Plot the intensity
     plt.figure(figsize=(10, 6))
-    plt.plot(slab.x_values, S, label='Intensity')
+    plt.plot(slab.x_values, I_emergent, label='Intensity')
     # Plot Planck function B (use mean if B is depth-dependent) as reference
     plt.plot(slab.x_values, np.mean(slab.B) * np.ones_like(slab.x_values), ':k', label='Planck B')
     plt.xlabel('x (Doppler widths)')
     plt.ylabel('Intensity')
-    plt.title('Emergent Intensity vs xe')
+    plt.title('Emergent Intensity vs x')
     plt.grid()
-    plt.savefig('intensity_vs_x_k1_'+str(line1.k)+'_k2_'+str(line2.k)+'.png')
+    plt.savefig('intensity_vs_x_multi_line.png')
 
     # Plot the source function of each line and composite source function
     plt.figure(figsize=(10, 6))
-    for line in lines:
-        if hasattr(line, "S_line"):
-            plt.semilogy(np.log10(slab.tau), line.S_line, label=f'Line at x={line.line_center}')
-    composite_S = slab.composite_S(lines)
-    plt.semilogy(np.log10(slab.tau), composite_S[:, slab.x_values.size//2], label='Composite S at line center', linestyle='--')
-    plt.semilogy(np.log10(slab.tau), slab.B, ':k', label = 'Planck B')
+    for i, S_line in enumerate(S_lines):
+        plt.semilogy(np.log10(slab.tau), S_line, label=f'Line {i+1} at x={slab.lines[i].line_center}')
+    plt.semilogy(np.log10(slab.tau), S_nu[:, slab.x_values.size//2], label='Composite S at center', linestyle='--')
+    plt.semilogy(np.log10(slab.tau), np.mean(slab.B) * np.ones_like(slab.tau), ':k', label = 'Planck B')
     plt.xlabel('Optical Depth (tau)')
     plt.ylabel('Source Function')
     plt.title('Source Function vs Optical Depth')
-    plt.xscale('log')
     plt.grid()
     plt.legend()
-    plt.savefig('source_function_vs_tau_k1_'+str(line1.k)+'_k2_'+str(line2.k)+'.png')
-
-    # Build composite source function grid (depth x frequency)
-    S_nu_grid = slab.composite_S(lines)   # shape (ND, Nfreq)
-
-    # Compute emergent intensity (formal solution) and store in slab.I
-    I_emergent = slab.formal_solution(lines, mu = 1.0, boundary_condition = 1.0)
-
-    def plot_line_and_composite(lines, slab, S_nu_grid, I_emergent):
-        x = slab.x_values
-        tau = slab.tau
-        B = slab.B
-        # ensure per-line normalized profile present
-        for line in lines:
-            if not hasattr(line, 'phi_x_global'):
-                line.compute_phi_x(x)
-                if getattr(slab, 'x_weights', None) is None:
-                    dx = x[1] - x[0]
-                    slab.x_weights = np.ones_like(x) * dx
-                norm = np.sum(line.phi_x * slab.x_weights)
-                line.phi_x_global = line.phi_x / norm if norm != 0.0 else line.phi_x.copy()
-
-        # Precompute denom used in composite S
-        denom = np.zeros_like(x)
-        for line in lines:
-            denom += line.k * line.phi_x_global
-        denom_safe = np.where(denom == 0.0, 1.0, denom)
-
-        # 1) For each line: emissivity vs x at selected depths, and S_line vs tau with Planck B
-        depths_idx = [0, slab.ND // 2, slab.ND - 1]  # top, mid, bottom
-        for i, line in enumerate(lines):
-            # emissivity spectra at selected depths: eps(x) = k * phi(x) * S_line(depth)
-            plt.figure(figsize=(8,5))
-            for d in depths_idx:
-                emiss = line.k * line.phi_x_global * line.S_line[d]
-                plt.plot(x, emiss, label=f'depth idx {d}')
-            plt.plot(x, np.mean(B) * np.ones_like(x), ':k', label='Planck B (mean)')
-            plt.xlabel('x (Doppler units)')
-            plt.ylabel('Emissivity ~ k phi(x) S_line(depth)')
-            plt.title(f'Line {i+1} emissivity vs x (selected depths) — center={line.line_center}')
-            plt.legend()
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(f'line_{i+1}_emissivity_vs_x.png', dpi=150)
-            plt.close()
-
-            # S_line vs tau with Planck B reference
-            plt.figure(figsize=(6,5))
-            plt.plot(tau, line.S_line, label=f'Line {i+1} S_line')
-            # Plot Planck B; if B is depth-dependent plot full curve else mean
-            if np.size(B) == slab.ND:
-                plt.plot(tau, B, ':k', label='Planck B (depth)')
-            else:
-                plt.plot(tau, np.mean(B) * np.ones_like(tau), ':k', label='Planck B (mean)')
-            plt.xscale('log')
-            plt.xlabel('Optical depth (tau)')
-            plt.ylabel('Source function')
-            plt.title(f'Line {i+1} Source function vs tau')
-            plt.legend()
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(f'line_{i+1}_S_vs_tau.png', dpi=150)
-            plt.close()
-
-        # Emergent intensity spectrum
-        plt.figure(figsize=(8,5))
-        plt.plot(x, I_emergent, label='Emergent Intensity')
-        plt.plot(x, np.mean(B) * np.ones_like(x), ':k', label='Planck B (mean)')
-        plt.xlabel('x (Doppler units)')
-        plt.ylabel('Intensity')
-        plt.title('Emergent Intensity Spectrum')
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig('emergent_intensity_vs_x.png', dpi=150)
-        plt.close()
-
-        # 2) Composite source: S_nu vs x for selected depths, with Planck B
-        plt.figure(figsize=(8,5))
-        for d in depths_idx:
-            plt.plot(x, S_nu_grid[d, :], label=f'Composite S at depth idx {d}')
-        plt.plot(x, np.mean(B) * np.ones_like(x), ':k', label='Planck B (mean)')
-        plt.xlabel('x (Doppler units)')
-        plt.ylabel('Composite source S_nu (depth slice)')
-        plt.title('Composite Source Function vs x (selected depths)')
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig('composite_S_vs_x_selected_depths.png', dpi=150)
-        plt.close()
-
-        # 3) Composite source vs tau at line centers (for each line choose its center index)
-        plt.figure(figsize=(6,5))
-        for i, line in enumerate(lines):
-            idx = np.argmin(np.abs(x - line.line_center))
-            plt.plot(tau, S_nu_grid[:, idx], label=f'Composite S at x~{line.line_center:.2g}')
-        if np.size(B) == slab.ND:
-            plt.plot(tau, B, ':k', label='Planck B (depth)')
-        else:
-            plt.plot(tau, np.mean(B) * np.ones_like(tau), ':k', label='Planck B (mean)')
-        plt.xscale('log')
-        plt.xlabel('Optical depth (tau)')
-        plt.ylabel('Composite source at selected x')
-        plt.title('Composite S vs tau at line centers')
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig('composite_S_vs_tau_line_centers.png', dpi=150)
-        plt.close()
-
-        # 4) Per-line contribution to composite S for all depths (combined single figure)
-        # contribution(depth,x) = (k * phi(x) * S_line(depth)) / denom(x)
-        for i, line in enumerate(lines):
-            contrib = (line.k * line.phi_x_global[None, :] ) * line.S_line[:, None]
-            contrib /= denom_safe[None, :]  # safe division
-        # Build per-line contribution arrays (depth x frequency) and plot them ON THE SAME figure
-        contribs = []
-        for line in lines:
-            contrib = (line.k * line.phi_x_global[None, :]) * line.S_line[:, None]
-            contrib /= denom_safe[None, :]  # safe division
-            contribs.append(contrib)
-
-        # Single combined figure: composite S heatmap + contour overlays of contributions
-        plt.figure(figsize=(10, 6))
-        im = plt.imshow(S_nu_grid, aspect='auto', origin='lower',
-                        extent=[x[0], x[-1], tau[0], tau[-1]], cmap='plasma')
-        cbar = plt.colorbar(im, label='Composite S_nu(depth, x)')
-        # choose distinct contour colors for up to 6 lines
-        palette = ['cyan', 'lime', 'maroon', 'magenta', 'yellow', 'orange']
-        contour_levels = [0.05, 0.1, 0.25, 0.5]  # fractional contribution levels
-
-        # Build explicit legend handles (one per line) to avoid relying on contour internals
-        from matplotlib.lines import Line2D
-        legend_handles = []
-        for idx, contrib in enumerate(contribs):
-            color = palette[idx % len(palette)]
-            # draw contours; guard against any library differences
-            try:
-                CS = plt.contour(x, tau, contrib, levels=contour_levels, colors=[color],
-                                 linewidths=1.0, alpha=0.9)
-            except Exception:
-                # fallback: draw a thin filled contourf for visibility
-                plt.contourf(x, tau, contrib, levels=[0.0] + contour_levels, colors=[color], alpha=0.05)
-
-            # create a proxy artist for legend
-            legend_handles.append(Line2D([0], [0], color=color, lw=2, label=f'Line {idx+1} contrib'))
-
-        plt.xlabel('x (Doppler units)')
-        plt.ylabel('Optical depth (tau)')
-        plt.title('Composite S_nu (heatmap) with line contribution contours')
-        plt.gca().set_yscale('linear')
-        # add legend for contribution proxies + a proxy for heatmap
-        heatmap_proxy = Line2D([0], [0], color='k', lw=2, linestyle='--', label='Composite S (example)')
-        all_handles = [heatmap_proxy] + legend_handles
-        plt.legend(handles=all_handles, loc='upper right')
-        plt.tight_layout()
-        plt.savefig('combined_line_contributions_depth_x.png', dpi=150)
-        plt.close()
-
-        # 5) Per-line contributions vs x for ALL depths (decimated curves to avoid overplotting)
-        plt.figure(figsize=(11,6))
-        decim = max(1, int(np.ceil(slab.ND / 60)))  # plot up to ~60 depth curves
-        depths_all = np.arange(0, slab.ND, decim)
-        for idx, contrib in enumerate(contribs):
-            color = palette[idx % len(palette)]
-            # plot many depth slices with low alpha
-            for d in depths_all:
-                plt.plot(x, contrib[d, :], color=color, alpha=0.08, linewidth=1)
-            # overlay a thicker mean contribution curve for visibility
-            mean_curve = np.mean(contrib[depths_all, :], axis=0)
-            plt.plot(x, mean_curve, color=color, lw=1.5, alpha=0.9, label=f'Line @{lines[idx].line_center} contribution (avg depths)')
-
-            # find depth where this line contributes the most (integrated over x with weights)
-            if getattr(slab, "x_weights", None) is None:
-                dx = x[1] - x[0]
-                xw = np.ones_like(x) * dx
-            else:
-                xw = slab.x_weights
-            # total fractional contribution per depth (weighted integral over x)
-            total_per_depth = np.sum(contrib * xw[None, :], axis=1)
-            depth_max = int(np.argmax(total_per_depth))
-            # plot the contribution curve at that depth as a thick line
-            plt.plot(x, contrib[depth_max, :], color=color, lw=2.5, alpha=1.0, linestyle = "--",
-                     label=f'Line @{lines[idx].line_center} peak depth idx={depth_max}, tau={slab.tau[depth_max]:.2g}')
-
-        # overlay composite S (choose mid depth) as dashed black curve for comparison
-        mid = slab.ND // 2
-        plt.plot(x, S_nu_grid[mid, :], '--k', lw=2.0, label='Composite S (mid depth)')
-        # overlay Planck B reference (mean)
-        plt.plot(x, np.mean(B) * np.ones_like(x), ':k', label='Planck B (mean)')
-        plt.xlabel('x (Doppler units)')
-        plt.ylabel('Source function')
-        plt.title('Per-line contributions vs x (all depths overlay; avg & mid shown)')
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig('per_line_contributions_all_depths_vs_x.png', dpi=150)
-        plt.close()
-
-        print("Saved plots: per-line emissivity, S_vs_tau, composite S vs x/tau, combined contribution heatmap, and per-line contributions (all depths).")
-    plot_line_and_composite(lines, slab, S_nu_grid, I_emergent)
+    plt.savefig('source_function_vs_tau_multi_line.png')
+    
+    print("\nPlots saved successfully!")
+    print(f"Converged in {len(result['rel_history'])} iterations")
+    print(f"Final error: {result['rel_history'][-1]:.3e}")
 
     # 20. 02. 2026.
     # Svaka linija treba da ima posebnu normu za phi koja ulazi u njen J (ne mora normirati na globalu)
