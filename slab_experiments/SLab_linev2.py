@@ -82,22 +82,6 @@ class Slab:
         self.compute_tau()  # Compute the tau grid, this function can also be used externally
     
     def add_line(self, line_center=0.0, a=0.0, k=1.0):
-        """Add a spectral line to the slab.
-        
-        Parameters
-        ----------
-        line_center : float
-            Center of the line in Doppler units
-        a : float
-            Damping parameter (0.0 for Gaussian, typical 0.001-0.01 for Voigt)
-        k : float
-            Line strength / opacity weighting factor
-            
-        Returns
-        -------
-        line : Slab.Line
-            The created line object
-        """
         line = self.Line(len(self.tau), line_center=line_center, a=a, k=k, slab_in=self)
         self.lines.append(line)
         return line
@@ -652,12 +636,10 @@ class Slab:
                     I_depth_sum = I_in_depth + I_out_depth
 
                     # accumulate J for each line using its phi at this frequency (use 1/2 when summing ±μ)
-                    # NOTE: This would maybe be cleared, if there was a method/function that passes I_in, I_out to 
-                    # to he lines, and then they add it to their J 
                     for j, line in enumerate(lines):
                         phi_j = line.phi_x_global[l]
                         J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_in_depth
-                        J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_out_depth  
+                        J_lines[j] += 0.5 * w_mu * w_x * phi_j * I_out_depth
             # Now update each line's S_line using ALI / diagonal ALO if possible
             max_rel = 0.0
             tiny = 1e-20  # small threshold to avoid division by zero
@@ -801,6 +783,115 @@ class Slab:
         # Compute final outputs using converged source functions
         final_S_nu = self.composite_S(lines)
         final_I = self.formal_solution(lines, mu=1.0, boundary_condition=0.0)
+        return {
+            "S_nu": final_S_nu,
+            "I_emergent": final_I,
+            "S_lines": [line.S_line.copy() for line in lines],
+            "rel_history": np.array(rel_history)
+        }
+
+    def iterative_scheme_with_incident_radiation(self, lines=None, max_iter=1000, tol=1e-6, verbose=False):
+        """Iterative scheme WITH incident radiation boundary condition.
+        
+        This method is similar to iterative_scheme() but includes incident radiation
+        from the photosphere for the outward-going rays. Use this when modeling
+        situations with significant external radiation input (e.g., Test 4).
+        
+        For Tests 1-3, use iterative_scheme() without incident radiation.
+        """
+        # If lines is None, use self.lines.
+        if lines is None:
+            lines = self.lines
+        # Setup: global grid, profiles, quadrature
+        self.global_x_grid(lines)
+        self.compute_phi(lines, correct_normalization=False)
+        if getattr(self, "x_weights", None) is None or self.x_weights.size != self.x_values.size:
+            dx = self.x_values[1] - self.x_values[0]
+            self.x_weights = np.ones_like(self.x_values) * dx
+        if getattr(self, "mu_values", None) is None or getattr(self, "mu_weights", None) is None:
+            self.mu_grid(self.NM if self.NM is not None else 8, verbose=False, diffuse=True)
+        
+        Nfreq = len(self.x_values)
+        ND = len(self.tau)
+        Nmu = len(self.mu_values)
+        
+        # INITIALIZATION: Ensure global profiles and initialize S_line
+        for line in lines:
+            if not hasattr(line, "phi_x_global"):
+                line.compute_phi_x(self.x_values)
+                norm = np.sum(line.phi_x * self.x_weights)
+                line.phi_x_global = line.phi_x / norm if norm != 0.0 else line.phi_x.copy()
+            if getattr(line, "S_line", None) is None:
+                line.S_line = np.copy(self.B)
+        
+        rel_history = []
+        for iteration in tqdm(range(max_iter)):
+            # Build current composite S_nu on global grid (depth x freq)
+            S_nu = self.composite_S(lines)
+            
+            # Initialize J for each line
+            for line in lines:
+                line.initialize_J()
+            
+            # Loop over angles and frequencies, WITH incident radiation for outward rays
+            for m in range(Nmu):
+                mu = self.mu_values[m]
+                w_mu = self.mu_weights[m]
+                # Get incident radiation boundary condition for this angle
+                bc_incident = self.get_boundary_radiation(mu)
+                
+                for l in range(Nfreq):
+                    # Total opacity at this freq: sum over lines (including continuum)
+                    tau_lambda = np.zeros_like(self.tau)
+                    tau_lambda += self.r * self.tau
+                    
+                    # Accumulate line opacity contributions at this frequency
+                    for line in lines:
+                        phi_l = line.phi_x_global[l]
+                        line_opacity = line.k * phi_l
+                        tau_lambda += self.tau * line_opacity
+                    
+                    # Solve formal solution using composite source and total opacity
+                    # INCLUDE incident radiation for outward rays (boundary condition)
+                    I_out = sc_2nd_order(tau_lambda, S_nu[:, l], mu, bc_incident)
+                    I_out_depth = I_out[0]
+                    # Inward rays have no incident radiation from below
+                    I_in = sc_2nd_order(tau_lambda, S_nu[:, l], -mu, 0.0)
+                    I_in_depth = I_in[0]
+                    
+                    # Each line independently measures J from the intensity field
+                    for line in lines:
+                        phi_j = line.phi_x_global[l]
+                        line.accumulate_J(I_out_depth, I_in_depth, l, w_mu, phi_j, weight_factor=0.5)
+            
+            # Update each line's S_line independently and check convergence
+            max_rel = 0.0
+            for line in lines:
+                rel = line.update_S_line()
+                max_rel = max(max_rel, rel)
+            
+            rel_history.append(max_rel)
+            if verbose:
+                print(f"iterative_scheme_with_incident_radiation iter {iteration:3d} max_rel={max_rel:.3e}")
+            
+            # Check convergence
+            if max_rel < tol:
+                if verbose:
+                    print(f"iterative_scheme_with_incident_radiation converged after {iteration} iterations (max_rel={max_rel:.3e})")
+                break
+        else:
+            if verbose:
+                print("iterative_scheme_with_incident_radiation: did not converge within max_iter")
+        
+        # Compute final outputs using converged source functions
+        final_S_nu = self.composite_S(lines)
+        
+        # For final emergent intensity, include incident radiation at mu=1.0
+        mu_final = 1.0
+        bc_final_radiation = self.get_boundary_radiation(mu_final)
+        bc_final = np.full(len(self.x_values), bc_final_radiation)
+        
+        final_I = self.formal_solution(lines, mu=mu_final, boundary_condition=bc_final)
         return {
             "S_nu": final_S_nu,
             "I_emergent": final_I,
