@@ -1150,9 +1150,9 @@ def plot_help(slab, lines, result=None, max_iter=2000, tol=1e-6, save_prefix='',
 if __name__ == "__main__":
     # Define the input parameters
     ND = 81
-    tau_max = 1e3
-    epsilon = np.ones(ND) * 5e-3
-    B = np.ones(ND) * 5.0
+    tau_max = 1e4
+    epsilon = np.ones(ND) * 1e-4
+    B = np.ones(ND) * 1.0
     H = 80000.0 # Height of the slab above the solar surface in kilometers
 
     # Create the slab instance
