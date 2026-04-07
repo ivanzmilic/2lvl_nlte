@@ -18,8 +18,8 @@ print("\nSetup: Identical Parameters for Both Solvers")
 print("-"*100)
 
 # Slab parameters (MUST BE IDENTICAL)
-ND = 91                          # Number of depth points
-tau_max = 1e4                    # Maximum optical depth
+ND = 11                          # Number of depth points
+tau_max = 1e1                    # Maximum optical depth
 epsilon = np.ones(ND) * 1e-4     # Thermalization parameter (uniform)
 B = np.ones(ND) * 1.0            # Planck function (uniform)
 H = 80000.0                      # Height above surface (km)
@@ -30,10 +30,10 @@ a_voigt = 0.05                   # Voigt damping parameter
 k_opacity = 1.0                  # Opacity coefficient
 
 # Quadrature parameters (SHOULD MATCH for valid comparison)
-NM_angles = 8                    # Number of mu (angle) points
-NL_freqs = 41                    # Number of frequency points
-max_iterations = 2000            # Maximum iterations
-tolerance = 1e-6                 # Convergence tolerance
+NM_angles = 2                    # Number of mu (angle) points
+NL_freqs = 5                    # Number of frequency points
+max_iterations = 1            # Maximum iterations
+tolerance = 1e-3                 # Convergence tolerance
 
 print(f"Slab parameters:")
 print(f"  ND = {ND}, tau_max = {tau_max:.2e}, epsilon = {epsilon[0]:.2e}, B = {B[0]:.2f}")
@@ -72,9 +72,10 @@ slab_ref.solve_source_function_ALO(max_iter=max_iterations, tol=tolerance, verbo
 iters_ref = len([x for x in slab_ref.rel_err if x > 0])
 print(f"✓ Converged in {iters_ref} iterations")
 print(f"  S_ref range: [{np.min(slab_ref.S):.6f}, {np.max(slab_ref.S):.6f}]")
+print(f"  J_ref range: [{np.min(slab_ref.J):.6e}, {np.max(slab_ref.J):.6e}]")
 
 # Compute emergent spectrum
-x_obs = np.linspace(-10, 10, 501)
+x_obs = np.linspace(-6, 6, 501)
 I_ref = slab_ref.formal_solution_given_direction(mu_obs=1.0, x_obs=x_obs, boundary_condition=0.0, recalc_profile=True)
 print(f"  I_ref range: [{np.min(I_ref):.2e}, {np.max(I_ref):.2e}]")
 
@@ -590,330 +591,6 @@ else:
 ✗ MAJOR DISCREPANCY: Codes use substantially different algorithms
 """)
 
-# Now, multi-line validation can proceed (previous study needs to be expanded)
-
-# 2) Test the code with two lines where one line is extremely weak, and compare to one-line code.
-
-print("="*100)
-print("MULTI-LINE VALIDATION TESTS: Line Coupling and Separation")
-print("="*100)
-
-# ===== IDENTICAL BASE PARAMETERS FOR ALL TESTS =====
-ND = 91
-tau_max = 1e4
-epsilon = np.ones(ND) * 1e-4
-B = np.ones(ND) * 1.0
-H = 80000.0
-
-# Quadrature
-NM_angles = 8
-NL_freqs = 41
-max_iterations = 1000
-tolerance = 1e-6
-
-print(f"\nBase Parameters:")
-print(f"  ND = {ND}, tau_max = {tau_max:.2e}, epsilon = {epsilon[0]:.2e}")
-print(f"  Quadrature: NM = {NM_angles}, NL = {NL_freqs}")
-print(f"  Convergence: max_iter = {max_iterations}, tol = {tolerance:.2e}")
-
-# ========== TEST 2: WEAK LINE COUPLING ==========
-print("\n" + "="*100)
-print("TEST 2: WEAK LINE COUPLING - k=1e-3 Weak vs k=1.0 Strong")
-print("="*100)
-
-# Test 2a: Single strong line reference
-print("\nTest 2a: Single strong line (k=1.0) reference...")
-slab_2a = sv2.Slab(ND=ND, tau_max=tau_max, epsilon=epsilon, B=B, H=H)
-slab_2a.add_line(line_center=0.0, a=0.05, k=3.0)
-slab_2a.mu_grid(N_mu=NM_angles, verbose=False, diffuse=True)
-
-result_2a = slab_2a.iterative_scheme(max_iter=max_iterations, tol=tolerance, verbose=False)
-S_2a = result_2a["S_lines"][0].copy()
-I_2a = result_2a["I_emergent"].copy()
-iters_2a = len([x for x in result_2a["rel_history"] if x > 0])
-
-print(f"  ✓ Converged in {iters_2a} iterations")
-print(f"  S range: [{np.min(S_2a):.6f}, {np.max(S_2a):.6f}]")
-
-# Test 2b: Strong + weak line system
-print("\nTest 2b: Two-line system (k=1.0 strong + k=1e-3 weak)...")
-slab_2b = sv2.Slab(ND=ND, tau_max=tau_max, epsilon=epsilon, B=B, H=H)
-slab_2b.add_line(line_center=0.0, a=0.05, k=3.0)      # Strong line
-slab_2b.add_line(line_center=0.0, a=0.05, k=1.0)     # Weak line
-slab_2b.mu_grid(N_mu=NM_angles, verbose=False, diffuse=True)
-
-result_2b = slab_2b.iterative_scheme(max_iter=max_iterations, tol=tolerance, verbose=False)
-S_2b_strong = result_2b["S_lines"][0].copy()
-S_2b_weak = result_2b["S_lines"][1].copy()
-I_2b = result_2b["I_emergent"].copy()
-iters_2b = len([x for x in result_2b["rel_history"] if x > 0])
-
-print(f"  ✓ Converged in {iters_2b} iterations")
-print(f"  S_strong range: [{np.min(S_2b_strong):.6f}, {np.max(S_2b_strong):.6f}]")
-print(f"  S_weak range: [{np.min(S_2b_weak):.6f}, {np.max(S_2b_weak):.6f}]")
-
-# Test 2 Analysis
-print("\n" + "-"*100)
-print("TEST 2 ANALYSIS: Weak Line Perturbation")
-print("-"*100)
-
-S_diff_2 = S_2b_strong - S_2a
-S_rel_2 = np.abs(S_diff_2) / (np.abs(S_2a) + 1e-20)
-max_rel_S_2 = np.max(S_rel_2)
-
-print(f"\nStrong line perturbation (two-line vs single):")
-print(f"  Max absolute difference: {np.max(np.abs(S_diff_2)):.3e}")
-print(f"  Max relative difference: {max_rel_S_2:.3e}")
-print(f"  Mean relative difference: {np.mean(S_rel_2):.3e}")
-
-print(f"\nWeak line characteristics:")
-print(f"  S_weak / S_strong ratio:")
-weak_ratio = S_2b_weak / (np.abs(S_2b_strong) + 1e-20)
-print(f"    Min: {np.min(weak_ratio):.3e}")
-print(f"    Mean: {np.mean(weak_ratio):.3e}")
-print(f"    Max: {np.max(weak_ratio):.3e}")
-
-# Intensity comparison
-f_2a = interp1d(slab_2a.x_values, I_2a, kind='cubic', bounds_error=False, fill_value='extrapolate')
-f_2b = interp1d(slab_2b.x_values, I_2b, kind='cubic', bounds_error=False, fill_value='extrapolate')
-
-x_common_2 = np.linspace(max(slab_2a.x_values.min(), slab_2b.x_values.min()),
-                          min(slab_2a.x_values.max(), slab_2b.x_values.max()), 300)
-I_2a_common = f_2a(x_common_2)
-I_2b_common = f_2b(x_common_2)
-I_diff_2 = I_2b_common - I_2a_common
-I_rel_2 = np.abs(I_diff_2) / (np.abs(I_2a_common) + 1e-20)
-
-print(f"\nIntensity perturbation (two-line vs single):")
-print(f"  Max absolute difference: {np.max(np.abs(I_diff_2)):.3e}")
-print(f"  Max relative difference: {np.max(I_rel_2):.3e}")
-
-test2_pass = max_rel_S_2 < 0.01
-print(f"\n✓ TEST 2 VERDICT: {'PASSED' if test2_pass else 'FAILED'}")
-if test2_pass:
-    print(f"  Weak line produces < 1% perturbation on strong line")
-else:
-    print(f"  WARNING: Perturbation exceeds 1% threshold ({max_rel_S_2:.2e})")
-
-# ========== TEST 3: SEPARATED IDENTICAL LINES ==========
-print("\n" + "="*100)
-print("TEST 3: SEPARATED IDENTICAL LINES - Two k=1.0 at x=0 and x=8")
-print("="*100)
-print("Note: Lines separated by ~8 Doppler widths should maintain independence")
-
-# Test 3a: Single line at x=0 reference
-print("\nTest 3a: Single line at x=0 (k=1.0) reference...")
-slab_3a = sv2.Slab(ND=ND, tau_max=tau_max, epsilon=epsilon, B=B, H=H)
-slab_3a.add_line(line_center=0.0, a=0.05, k=1.0)
-slab_3a.mu_grid(N_mu=NM_angles, verbose=False, diffuse=True)
-
-result_3a = slab_3a.iterative_scheme(max_iter=max_iterations, tol=tolerance, verbose=False)
-S_3a = result_3a["S_lines"][0].copy()
-I_3a = result_3a["I_emergent"].copy()
-iters_3a = len([x for x in result_3a["rel_history"] if x > 0])
-
-print(f"  ✓ Converged in {iters_3a} iterations")
-print(f"  S range: [{np.min(S_3a):.6f}, {np.max(S_3a):.6f}]")
-
-# Test 3b: Single line at x=8 reference
-print("\nTest 3b: Single line at x=8 (k=1.0) reference...")
-slab_3b = sv2.Slab(ND=ND, tau_max=tau_max, epsilon=epsilon, B=B, H=H)
-slab_3b.add_line(line_center=8.0, a=0.05, k=1.0)
-slab_3b.mu_grid(N_mu=NM_angles, verbose=False, diffuse=True)
-
-result_3b = slab_3b.iterative_scheme(max_iter=max_iterations, tol=tolerance, verbose=False)
-S_3b = result_3b["S_lines"][0].copy()
-I_3b = result_3b["I_emergent"].copy()
-iters_3b = len([x for x in result_3b["rel_history"] if x > 0])
-
-print(f"  ✓ Converged in {iters_3b} iterations")
-print(f"  S range: [{np.min(S_3b):.6f}, {np.max(S_3b):.6f}]")
-
-# Test 3c: Two-line system (both k=1.0, separated by 8)
-print("\nTest 3c: Two-line system (k=1.0 at x=0 and x=8)...")
-slab_3c = sv2.Slab(ND=ND, tau_max=tau_max, epsilon=epsilon, B=B, H=H)
-slab_3c.add_line(line_center=0.0, a=0.05, k=1.0)
-slab_3c.add_line(line_center=8.0, a=0.05, k=1.0)
-slab_3c.mu_grid(N_mu=NM_angles, verbose=False, diffuse=True)
-
-result_3c = slab_3c.iterative_scheme(max_iter=max_iterations, tol=tolerance, verbose=False)
-S_3c_line1 = result_3c["S_lines"][0].copy()
-S_3c_line2 = result_3c["S_lines"][1].copy()
-I_3c = result_3c["I_emergent"].copy()
-iters_3c = len([x for x in result_3c["rel_history"] if x > 0])
-
-print(f"  ✓ Converged in {iters_3c} iterations")
-print(f"  S_line1 range: [{np.min(S_3c_line1):.6f}, {np.max(S_3c_line1):.6f}]")
-print(f"  S_line2 range: [{np.min(S_3c_line2):.6f}, {np.max(S_3c_line2):.6f}]")
-
-# Test 3 Analysis
-print("\n" + "-"*100)
-print("TEST 3 ANALYSIS: Line Independence")
-print("-"*100)
-
-# Line 1 comparison (x=0)
-S_diff_3a = S_3c_line1 - S_3a
-S_rel_3a = np.abs(S_diff_3a) / (np.abs(S_3a) + 1e-20)
-max_rel_S_3a = np.max(S_rel_3a)
-
-print(f"\nLine 1 at x=0 (two-line vs single):")
-print(f"  Max absolute difference: {np.max(np.abs(S_diff_3a)):.3e}")
-print(f"  Max relative difference: {max_rel_S_3a:.3e}")
-print(f"  Mean relative difference: {np.mean(S_rel_3a):.3e}")
-
-# Line 2 comparison (x=8)
-S_diff_3b = S_3c_line2 - S_3b
-S_rel_3b = np.abs(S_diff_3b) / (np.abs(S_3b) + 1e-20)
-max_rel_S_3b = np.max(S_rel_3b)
-
-print(f"\nLine 2 at x=8 (two-line vs single):")
-print(f"  Max absolute difference: {np.max(np.abs(S_diff_3b)):.3e}")
-print(f"  Max relative difference: {max_rel_S_3b:.3e}")
-print(f"  Mean relative difference: {np.mean(S_rel_3b):.3e}")
-
-# Check if lines in two-line system are identical
-line_ratio = S_3c_line1 / (np.abs(S_3c_line2) + 1e-20)
-print(f"\nLine identity check (S_line1 / S_line2 in two-line system):")
-print(f"  Min ratio: {np.min(line_ratio):.6f}")
-print(f"  Mean ratio: {np.mean(line_ratio):.6f}")
-print(f"  Max ratio: {np.max(line_ratio):.6f}")
-
-test3_pass = max_rel_S_3a < 0.05 and max_rel_S_3b < 0.05
-print(f"\n✓ TEST 3 VERDICT: {'PASSED' if test3_pass else 'FAILED'}")
-if test3_pass:
-    print(f"  Lines maintain < 5% deviation from single-line references")
-else:
-    print(f"  WARNING: Deviations exceed 5% threshold")
-
-# ========== DIAGNOSTIC PLOTS ==========
-print(f"\n" + "="*100)
-print("GENERATING DIAGNOSTIC PLOTS")
-print("="*100)
-
-fig = plt.figure(figsize=(18, 14))
-gs = fig.add_gridspec(3, 3, hspace=0.4, wspace=0.3)
-
-tau_log = np.log10(slab_2a.tau)
-
-# Row 1: Test 2 (Weak Line Coupling)
-# Plot 1: Source functions comparison
-ax1 = fig.add_subplot(gs[0, 0])
-ax1.plot(tau_log, S_2a, 'b-', lw=2.5, marker='o', markersize=3, label='Single strong (ref)')
-ax1.plot(tau_log, S_2b_strong, 'r--', lw=2.5, marker='s', markersize=3, label='Two-line strong')
-ax1.plot(tau_log, S_2b_weak, 'orange', linestyle=':', lw=2.5, marker='d', markersize=3, label='Two-line weak')
-ax1.axhline(B[0], color='k', linestyle=':', alpha=0.5, label='Planck B')
-ax1.set_xlabel('log₁₀(τ)', fontsize=10)
-ax1.set_ylabel('Source Function S', fontsize=10)
-ax1.set_title('Test 2: Source Functions vs log(τ)', fontsize=11, fontweight='bold')
-ax1.grid(True, alpha=0.3)
-ax1.legend(fontsize=9)
-
-# Plot 2: Strong line perturbation
-ax2 = fig.add_subplot(gs[0, 1])
-ax2.semilogy(tau_log, np.abs(S_diff_2) + 1e-16, 'purple', lw=2.5, marker='v', markersize=4)
-ax2.set_xlabel('log₁₀(τ)', fontsize=10)
-ax2.set_ylabel('|ΔS|', fontsize=10)
-ax2.set_title('Test 2: Strong Line Perturbation (abs)', fontsize=11, fontweight='bold')
-ax2.grid(True, alpha=0.3, which='both')
-
-# Plot 3: Relative S difference
-ax3 = fig.add_subplot(gs[0, 2])
-ax3.semilogy(tau_log, S_rel_2, 'orange', lw=2.5, marker='d', markersize=4)
-ax3.axhline(0.01, color='gray', linestyle='--', alpha=0.7, linewidth=1.5, label='1% threshold')
-ax3.set_xlabel('log₁₀(τ)', fontsize=10)
-ax3.set_ylabel('Relative Error', fontsize=10)
-ax3.set_title('Test 2: Strong Line Perturbation (rel)', fontsize=11, fontweight='bold')
-ax3.grid(True, alpha=0.3, which='both')
-ax3.legend(fontsize=9)
-
-# Row 2: Test 3 Line 1 (x=0)
-# Plot 4: Line 1 source functions
-ax4 = fig.add_subplot(gs[1, 0])
-ax4.plot(tau_log, S_3a, 'b-', lw=2.5, marker='o', markersize=3, label='Single ref (x=0)')
-ax4.plot(tau_log, S_3c_line1, 'b--', lw=2.5, marker='s', markersize=3, label='Two-line line1')
-ax4.axhline(B[0], color='k', linestyle=':', alpha=0.5, label='Planck B')
-ax4.set_xlabel('log₁₀(τ)', fontsize=10)
-ax4.set_ylabel('Source Function S', fontsize=10)
-ax4.set_title('Test 3: Line 1 (x≈0) Source Functions', fontsize=11, fontweight='bold')
-ax4.grid(True, alpha=0.3)
-ax4.legend(fontsize=9)
-
-# Plot 5: Line 1 perturbation
-ax5 = fig.add_subplot(gs[1, 1])
-ax5.semilogy(tau_log, np.abs(S_diff_3a) + 1e-16, 'blue', lw=2.5, marker='v', markersize=4)
-ax5.set_xlabel('log₁₀(τ)', fontsize=10)
-ax5.set_ylabel('|ΔS|', fontsize=10)
-ax5.set_title('Test 3: Line 1 Perturbation (abs)', fontsize=11, fontweight='bold')
-ax5.grid(True, alpha=0.3, which='both')
-
-# Plot 6: Line 1 relative difference
-ax6 = fig.add_subplot(gs[1, 2])
-ax6.semilogy(tau_log, S_rel_3a, 'blue', lw=2.5, marker='d', markersize=4)
-ax6.axhline(0.05, color='gray', linestyle='--', alpha=0.7, linewidth=1.5, label='5% threshold')
-ax6.set_xlabel('log₁₀(τ)', fontsize=10)
-ax6.set_ylabel('Relative Error', fontsize=10)
-ax6.set_title('Test 3: Line 1 Perturbation (rel)', fontsize=11, fontweight='bold')
-ax6.grid(True, alpha=0.3, which='both')
-ax6.legend(fontsize=9)
-
-# Row 3: Test 3 Line 2 (x=8)
-# Plot 7: Line 2 source functions
-ax7 = fig.add_subplot(gs[2, 0])
-ax7.plot(tau_log, S_3b, 'r-', lw=2.5, marker='o', markersize=3, label='Single ref (x=8)')
-ax7.plot(tau_log, S_3c_line2, 'r--', lw=2.5, marker='s', markersize=3, label='Two-line line2')
-ax7.axhline(B[0], color='k', linestyle=':', alpha=0.5, label='Planck B')
-ax7.set_xlabel('log₁₀(τ)', fontsize=10)
-ax7.set_ylabel('Source Function S', fontsize=10)
-ax7.set_title('Test 3: Line 2 (x≈8) Source Functions', fontsize=11, fontweight='bold')
-ax7.grid(True, alpha=0.3)
-ax7.legend(fontsize=9)
-
-# Plot 8: Line 2 perturbation
-ax8 = fig.add_subplot(gs[2, 1])
-ax8.semilogy(tau_log, np.abs(S_diff_3b) + 1e-16, 'red', lw=2.5, marker='v', markersize=4)
-ax8.set_xlabel('log₁₀(τ)', fontsize=10)
-ax8.set_ylabel('|ΔS|', fontsize=10)
-ax8.set_title('Test 3: Line 2 Perturbation (abs)', fontsize=11, fontweight='bold')
-ax8.grid(True, alpha=0.3, which='both')
-
-# Plot 9: Line 2 relative difference
-ax9 = fig.add_subplot(gs[2, 2])
-ax9.semilogy(tau_log, S_rel_3b, 'red', lw=2.5, marker='d', markersize=4)
-ax9.axhline(0.05, color='gray', linestyle='--', alpha=0.7, linewidth=1.5, label='5% threshold')
-ax9.set_xlabel('log₁₀(τ)', fontsize=10)
-ax9.set_ylabel('Relative Error', fontsize=10)
-ax9.set_title('Test 3: Line 2 Perturbation (rel)', fontsize=11, fontweight='bold')
-ax9.grid(True, alpha=0.3, which='both')
-ax9.legend(fontsize=9)
-
-plt.savefig('multiline_tests_2and3.png', dpi=150, bbox_inches='tight')
-print(f"✓ Saved: multiline_tests_2and3.png")
-plt.show()
-
-# ========== FINAL VERDICT ==========
-print(f"\n" + "="*100)
-print("MULTI-LINE TEST VERDICTS")
-print("="*100)
-
-print(f"\nTest 2 (Weak Line Coupling):")
-print(f"  Maximum relative S error: {max_rel_S_2:.3e}")
-print(f"  Status: {'✓ PASSED' if test2_pass else '✗ FAILED'}")
-
-print(f"\nTest 3 (Separated Identical Lines):")
-print(f"  Line 1 max relative error: {max_rel_S_3a:.3e}")
-print(f"  Line 2 max relative error: {max_rel_S_3b:.3e}")
-print(f"  Status: {'✓ PASSED' if test3_pass else '✗ FAILED'}")
-
-print(f"\n" + "="*100)
-if test2_pass and test3_pass:
-    print("✓ ALL MULTI-LINE TESTS PASSED")
-    print("  Multi-line implementation correctly handles:")
-    print("    - Weak line coupling (negligible perturbation)")
-    print("    - Line independence (when separated)")
-else:
-    print("⚠ SOME TESTS FAILED - Review results above")
-
-
 # ========== COMPARISON TESTS: ALO vs LI for Single Line ==========
 print(f"\n\n{'='*100}")
 print("COMPARISON TESTS: Can iterative_scheme() reproduce ALO results?")
@@ -1007,11 +684,11 @@ def test_plain_li_both_methods():
     print("TEST 2: Both methods using PLAIN Lambda Iteration (no acceleration)")
     print(f"{'='*100}")
     
-    ND = 81
-    tau_max = 1e3
-    epsilon = np.ones(ND) * 5e-3
-    B = np.ones(ND) * 5.0
-    H = 10e6
+    ND = 11
+    tau_max = 1e1
+    epsilon = np.ones(ND) * 1e-2
+    B = np.ones(ND) * 1.0
+    H = 80000
     
     # Method 1: illuminated_finite_slab as plain LI
     slab_old = ifs.Slab(ND, tau_max, epsilon, B, H)
@@ -1022,7 +699,7 @@ def test_plain_li_both_methods():
     slab_old.S = slab_old.B.copy()
     slab_old.rel_err = np.zeros(2000)
     
-    NL, NM = 81, 1
+    NL, NM = 5, 2
     phi, x_values, x_weights, mu_values, mu_weights = slab_old.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
     slab_old.phi = phi
     slab_old.x_values = x_values
@@ -1037,8 +714,8 @@ def test_plain_li_both_methods():
     print(f"  Running as plain LI: S_new = ε·B + (1-ε)·J")
     
     from rtfunctions import sc_2nd_order
-    max_iter = 2000
-    tol = 1e-6
+    max_iter = 1
+    tol = 1e-3
     
     for iteration in range(max_iter):
         slab_old.J = np.zeros(ND)

@@ -389,8 +389,8 @@ class Slab:
 
         
           
-        for iteration in range(max_iter):
-  
+        for iteration in range(1):
+            print("info::formal_solution::iteration: ", iteration+1)
             self.J = np.zeros(self.ND)
             self.L = np.zeros(self.ND)
             self.J_diff_lambda = np.zeros((self.ND, self.NL))
@@ -405,16 +405,18 @@ class Slab:
                     I_lambda  = sc_2nd_order(tau_lambda, self.S, mu, 0.0)
                     self.J_diff_lambda[:,l] += I_lambda[0] * w_mu * 0.5
                     
-                    self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+                    #self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
 
                     # Inward intensity
                     I_lambda  = sc_2nd_order(tau_lambda, self.S, -mu, 0.0)
                     self.J_diff_lambda[:,l] += I_lambda[0] * w_mu * 0.5 
-                    self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
+                    #self.L = self.L + I_lambda[1] * self.phi[l] * self.x_weights[l] * w_mu * 0.5
         
             # Sum up J over frequency
             self.J = np.sum(self.J_diff_lambda*self.phi[None,:]*self.x_weights[None,:], axis=1)
             
+            print("info::formal_solution::J: ", self.J)
+
             # Update source function taking into account J_scat  
             if (verbose):
                 print("info::formal_solution::J:", self.J)

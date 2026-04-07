@@ -719,7 +719,7 @@ class Slab:
                 line.S_line = np.copy(self.B)
         
         rel_history = []
-        for iteration in tqdm(range(max_iter)):
+        for iteration in tqdm(range(1)):
             # Build current composite S_nu on global grid (depth x freq)
             S_nu = self.composite_S(lines)  # uses current line.S_line internally
             
@@ -760,7 +760,7 @@ class Slab:
                         # Each line accumulates J with weight = 0.5 * w_mu * w_x * phi_j
                         # Do NOT weight by opacity fraction - that suppresses weaker lines
                         line.accumulate_J(I_out_depth, I_in_depth, l, w_mu, phi_j, weight_factor=0.5)
-            
+            print("J =", [line.J.copy() for line in lines])  # Debug print for J after accumulation
             # Update each line's S_line independently and check convergence
             max_rel = 0.0
             for line in lines:
@@ -863,6 +863,7 @@ class Slab:
                     for line in lines:
                         phi_j = line.phi_x_global[l]
                         line.accumulate_J(I_out_depth, I_in_depth, l, w_mu, phi_j, weight_factor=0.5)
+                        print(f"Line {line.line_center:.2f} iteration {iteration} frequency {self.x_values[l]:.2f} mu {mu:.2f} J={line.J.copy()}")  # Debug print for J accumulation
             
             # Update each line's S_line independently and check convergence
             max_rel = 0.0
