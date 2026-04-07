@@ -112,6 +112,7 @@ iters_new = len([x for x in rel_hist_new if x > 0])
 print(f"✓ Converged in {iters_new} iterations")
 print(f"  S_new range: [{np.min(S_new):.6f}, {np.max(S_new):.6f}]")
 print(f"  I_new range: [{np.min(I_new):.2e}, {np.max(I_new):.2e}]")
+print(f"  J_new range: [{np.min(line.J):.6e}, {np.max(line.J):.6e}]")
 
 results_new = {
     "tau": slab_new.tau.copy(),

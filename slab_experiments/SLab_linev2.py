@@ -863,8 +863,8 @@ class Slab:
                     for line in lines:
                         phi_j = line.phi_x_global[l]
                         line.accumulate_J(I_out_depth, I_in_depth, l, w_mu, phi_j, weight_factor=0.5)
-                        print(f"Line {line.line_center:.2f} iteration {iteration} frequency {self.x_values[l]:.2f} mu {mu:.2f} J={line.J.copy()}")  # Debug print for J accumulation
-            
+                        
+            print("J =", [line.J.copy() for line in lines])  # Debug print for J after accumulation
             # Update each line's S_line independently and check convergence
             max_rel = 0.0
             for line in lines:
