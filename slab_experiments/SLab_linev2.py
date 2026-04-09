@@ -409,7 +409,7 @@ class Slab:
                 global_norm_corrected = global_norm
             
             line.global_norm = global_norm_corrected
-            
+            print(f"[DEBUG] Line {line}: global norm = {global_norm_corrected:.6e}")
             # Re-evaluate phi_x on global grid after correction
             line.compute_phi_x(self.x_values)
 
@@ -713,6 +713,7 @@ class Slab:
             if not hasattr(line, "phi_x_global"):
                 line.compute_phi_x(self.x_values)
                 norm = np.sum(line.phi_x * self.x_weights)
+                print(f"[DEBUG] Line {line}: norm = {norm:.6e}")
                 line.phi_x_global = line.phi_x / norm if norm != 0.0 else line.phi_x.copy()
             # Initialize S_line = B (clean state for multi-line interaction)
             if getattr(line, "S_line", None) is None:

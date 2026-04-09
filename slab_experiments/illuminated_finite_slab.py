@@ -212,6 +212,7 @@ class Slab:
             print (x_weights)
         # Normalize the weights so the integral of the profile is 1
         norm = np.sum(phi * x_weights)
+        print ("info::slab::calculate_profiles_and_weights: profile normalization before = ", norm)
         if (verbose):
             print ("info::slab::calculate_profiles_and_weights: profile normalization before = ", norm)
         x_weights /= norm
@@ -374,8 +375,8 @@ class Slab:
         self.true_err = np.zeros(max_iter)  # Reset true error
         SEdd = 1.0 - (1.0 - np.sqrt(self.epsilon)) * (np.exp(-np.sqrt(3.0 * self.epsilon) * self.tau)) # Eddington source function
         # Initialize weights for angle and frequency integration, same as in the function above
-        NL = 17
-        NM = 1
+        NL = 17 # 17
+        NM = 1 # 1
         phi, x_values, x_weights, mu_values, mu_weights = self.calculate_profiles_and_weights(NM, NL, verbose=False, diffuse=True)
         self.phi = phi
         self.x_values = x_values
